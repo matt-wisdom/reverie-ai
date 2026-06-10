@@ -4,11 +4,10 @@ import os
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
-LADYBUG_DB_PATH = os.getenv("LADYBUG_DB_PATH", "ladybug_graph.db")
 
 class LadybugClient:
-    def __init__(self, db_path: str = LADYBUG_DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: str):
+        self.db_path = str(db_path)
         self._db = None
         self._conn = None
 
@@ -64,5 +63,3 @@ class LadybugClient:
                 logger.debug("Knowledge Graph schema already exists.")
             else:
                 logger.error(f"Error initializing schema: {e}")
-
-ladybug_client = LadybugClient()

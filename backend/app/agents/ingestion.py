@@ -6,10 +6,10 @@ from tree_sitter import QueryCursor
 
 from tree_sitter import Language, Parser
 import google.generativeai as genai
-from ..db.ladybug_db import ladybug_client
-from ..vector_store.chroma_client import chroma_client
+from ..db.ladybug_db import LadybugClient
+from ..vector_store.chroma_client import ChromaClient
 from ..core.logging_config import get_logger
-from ..core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY, gemini_limiter
+from ..core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY, gemini_limiter, get_project_dir
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,9 @@ LANGUAGES = {
 }
 
 class IngestionPipeline:
-    def __init__(self):
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.project_dir = get_project_dir(tag)
         self.ignore_list = {
             ".git", "node_modules", "__pycache__", "venv", ".venv", 
             "dist", "build", ".reverie.yaml", ".pytest_cache", 
@@ -34,10 +36,17 @@ class IngestionPipeline:
         }
         self.config_files = {"CLAUDE.md", "REVERIE.md", "AGENTS.md", "GEMINI.md"}
         self.parsers = {ext: Parser(lang) for ext, lang in LANGUAGES.items()}
+        
+        # Project-specific clients
+        self.ladybug_client = LadybugClient(db_path=self.project_dir / "graph_db")
+        self.chroma_client = ChromaClient(path=self.project_dir / "vector_db")
 
     async def process_codebase(self, root_path: str):
         """Main entry point for repo ingestion."""
-        logger.info(f"Starting codebase ingestion for: {root_path}")
+        logger.info(f"Starting codebase ingestion for project {self.tag}: {root_path}")
+        # Initialize KG Schema for this project
+        self.ladybug_client.init_schema()
+        
         for root, dirs, files in os.walk(root_path):
             dirs[:] = [d for d in dirs if d not in self.ignore_list]
             
@@ -51,7 +60,7 @@ class IngestionPipeline:
                     file_path = os.path.join(root, file)
                     logger.debug(f"Processing file: {file_path}")
                     await self._process_file(file_path, ext)
-        logger.info(f"Finished codebase ingestion for: {root_path}")
+        logger.info(f"Finished codebase ingestion for project {self.tag}")
 
     def _get_folder_context(self, path: str, files: list[str]) -> str:
         context = ""
@@ -75,7 +84,7 @@ class IngestionPipeline:
 
     def _store_folder_metadata(self, path: str, summary: str, context: str):
         logger.debug(f"Storing folder metadata in KG for: {path}")
-        ladybug_client.execute(
+        self.ladybug_client.execute(
             "MERGE (d:Directory {path: $path}) SET d.summary = $summary, d.context = $context",
             {"path": path, "summary": summary, "context": context}
         )
@@ -106,7 +115,7 @@ class IngestionPipeline:
         from tree_sitter import Query, QueryCursor
 
         # 1. Create Module for the file and link to Directory
-        ladybug_client.execute(
+        self.ladybug_client.execute(
             "MATCH (d:Directory {path: $dir}) "
             "MERGE (m:Module {path: $path}) "
             "MERGE (d)-[:DIR_TO_MODULE]->(m)",
@@ -163,23 +172,20 @@ class IngestionPipeline:
                     
                     if tag == "class":
                         node_id = f"{file_path}:{name}"
-                        ladybug_client.execute(
+                        self.ladybug_client.execute(
                             "MATCH (m:Module {path: $file}) MERGE (c:Class {id: $id}) SET c.name = $name, c.file = $file MERGE (m)-[:MOD_TO_CLASS]->(c)",
                             {"id": node_id, "name": name, "file": file_path}
                         )
                     elif tag == "func":
                         current_func_name = name
                         node_id = f"{file_path}:{name}"
-                        ladybug_client.execute(
+                        self.ladybug_client.execute(
                             "MATCH (m:Module {path: $file}) MERGE (f:Function {id: $id}) SET f.name = $name, f.file = $file MERGE (m)-[:MOD_TO_FUNC]->(f)",
                             {"id": node_id, "name": name, "file": file_path}
                         )
                     elif tag == "call" and current_func_name:
                         caller_id = f"{file_path}:{current_func_name}"
-                        # We don't know the exact file of the callee easily without more analysis, 
-                        # so we use name as fallback for now or link to global functions.
-                        # For now, let's keep it simple.
-                        ladybug_client.execute(
+                        self.ladybug_client.execute(
                             "MATCH (caller:Function {id: $caller_id}) "
                             "MERGE (callee:Function {id: $callee_name}) SET callee.name = $callee_name "
                             "MERGE (caller)-[:CALLS]->(callee)",
@@ -189,7 +195,6 @@ class IngestionPipeline:
     def _semantic_chunking_to_vector_db(self, file_path: str, tree, content: bytes):
         chunks, metadatas, ids = [], [], []
         
-        # Walk the tree to find significant blocks
         def walk_for_chunks(node):
             if node.type in ["class_definition", "function_definition", "class_declaration", "function_declaration", "method_definition"]:
                 chunk_text = content[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
@@ -203,7 +208,6 @@ class IngestionPipeline:
 
         walk_for_chunks(tree.root_node)
         
-        # If no semantic blocks found, fallback to full file
         if not chunks:
             text = content.decode("utf-8", errors="ignore")
             if text.strip():
@@ -212,7 +216,7 @@ class IngestionPipeline:
                 ids.append(f"{file_path}_full")
 
         if chunks:
-            chroma_client.add_documents(chunks, metadatas, ids)
+            self.chroma_client.add_documents(chunks, metadatas, ids)
 
     def _fallback_chunking(self, file_path: str, content: bytes):
         """Simple line-based chunking for files where AST failed."""
@@ -221,4 +225,4 @@ class IngestionPipeline:
         chunk_size = 50
         for i in range(0, len(lines), chunk_size):
             chunk = "\n".join(lines[i:i+chunk_size])
-            chroma_client.add_documents([chunk], [{"file_path": file_path, "type": "fallback"}], [f"{file_path}_fb_{i}"])
+            self.chroma_client.add_documents([chunk], [{"file_path": file_path, "type": "fallback"}], [f"{file_path}_fb_{i}"])

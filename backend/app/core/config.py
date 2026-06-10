@@ -1,5 +1,16 @@
 import os
 from aiolimiter import AsyncLimiter
+from pathlib import Path
+
+# Storage Settings
+REVERIE_ROOT = Path(os.getenv("REVERIE_STORAGE_PATH", "./.reverie")).absolute()
+PROJECTS_ROOT = REVERIE_ROOT / "projects"
+GLOBAL_DB_PATH = REVERIE_ROOT / "registry.db"
+
+def get_project_dir(tag: str) -> Path:
+    project_dir = PROJECTS_ROOT / tag
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return project_dir
 
 # Gemini Settings
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")

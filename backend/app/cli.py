@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .db.session import SessionLocal, init_db
+from .db.session import get_registry_session, init_project_db
 from .db.models import Project
 from .core.logging_config import setup_logging, get_logger
 
@@ -40,9 +40,8 @@ def init(
     with open(config_path, "w") as f:
         yaml.dump(config_data, f)
 
-    # Register in DB
-    init_db()
-    db = SessionLocal()
+    # Register in Global Registry
+    db = get_registry_session()
     existing = db.query(Project).filter(Project.tag == project_id).first()
     if not existing:
         new_project = Project(
@@ -52,10 +51,13 @@ def init(
         )
         db.add(new_project)
         db.commit()
-        logger.info(f"Project '{project_folder.name}' registered with tag: {project_id}")
+        logger.info(f"Project '{project_folder.name}' registered globally with tag: {project_id}")
     else:
-        logger.info(f"Project with tag {project_id} already exists in database.")
+        logger.info(f"Project with tag {project_id} already registered.")
     db.close()
+    
+    # Initialize project-specific metadata DB
+    init_project_db(project_id)
 
     typer.echo(f"Initialized Reverie config in {config_path}")
     typer.echo(f"Project Tag: {project_id}")
@@ -63,8 +65,7 @@ def init(
 @app.command()
 def load(tag: str):
     """Begin ingestion of the project folder associated with the tag."""
-    init_db()
-    db = SessionLocal()
+    db = get_registry_session()
     project = db.query(Project).filter(Project.tag == tag).first()
     
     if not project:
@@ -90,11 +91,8 @@ def load(tag: str):
 
     typer.echo(f"Loading project: {tag} from {project_path}")
     
-    from .db.ladybug_db import ladybug_client
-    ladybug_client.init_schema()
-    
     from .agents.ingestion import IngestionPipeline
-    pipeline = IngestionPipeline()
+    pipeline = IngestionPipeline(tag=tag)
     asyncio.run(pipeline.process_codebase(project_path))
     
     typer.echo("Ingestion complete.")
