@@ -9,12 +9,13 @@ import google.generativeai as genai
 from ..db.ladybug_db import ladybug_client
 from ..vector_store.chroma_client import chroma_client
 from ..core.logging_config import get_logger
+from ..core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY, gemini_limiter
 
 logger = get_logger(__name__)
 
 # Initialize Gemini
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel(GEMINI_MODEL_TYPE)
 
 # Initialize Languages
 LANGUAGES = {
@@ -26,7 +27,11 @@ LANGUAGES = {
 
 class IngestionPipeline:
     def __init__(self):
-        self.ignore_list = {".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build"}
+        self.ignore_list = {
+            ".git", "node_modules", "__pycache__", "venv", ".venv", 
+            "dist", "build", ".reverie.yaml", ".pytest_cache", 
+            "chroma_data", "chroma_db", "dataset", ".idea", ".vscode"
+        }
         self.config_files = {"CLAUDE.md", "REVERIE.md", "AGENTS.md", "GEMINI.md"}
         self.parsers = {ext: Parser(lang) for ext, lang in LANGUAGES.items()}
 
@@ -61,8 +66,9 @@ class IngestionPipeline:
         logger.info(f"Generating AI summary for folder: {path}")
         prompt = f"Summarize the purpose and architecture of the folder '{path}' based on these files: {files}. Context: {context}"
         try:
-            response = await model.generate_content_async(prompt)
-            return response.text
+            async with gemini_limiter:
+                response = await model.generate_content_async(prompt)
+                return response.text
         except Exception as e:
             logger.error(f"Error generating folder summary for {path}: {e}")
             return f"Error generating summary: {e}"
@@ -98,6 +104,14 @@ class IngestionPipeline:
         """Uses Tree-sitter to map symbols and function calls across languages."""
         lang = LANGUAGES.get(ext) or LANGUAGES.get("js")
         from tree_sitter import Query, QueryCursor
+
+        # 1. Create Module for the file and link to Directory
+        ladybug_client.execute(
+            "MATCH (d:Directory {path: $dir}) "
+            "MERGE (m:Module {path: $path}) "
+            "MERGE (d)-[:DIR_TO_MODULE]->(m)",
+            {"dir": os.path.dirname(file_path), "path": file_path}
+        )
 
         # Language-specific queries for symbols AND calls
         queries = {
@@ -148,22 +162,28 @@ class IngestionPipeline:
                     name = content[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
                     
                     if tag == "class":
+                        node_id = f"{file_path}:{name}"
                         ladybug_client.execute(
-                            "MATCH (d:Directory {path: $dir}) MERGE (c:Class {name: $name, file: $file}) MERGE (d)-[:CONTAINS]->(c)",
-                            {"dir": os.path.dirname(file_path), "name": name, "file": file_path}
+                            "MATCH (m:Module {path: $file}) MERGE (c:Class {id: $id}) SET c.name = $name, c.file = $file MERGE (m)-[:MOD_TO_CLASS]->(c)",
+                            {"id": node_id, "name": name, "file": file_path}
                         )
                     elif tag == "func":
                         current_func_name = name
+                        node_id = f"{file_path}:{name}"
                         ladybug_client.execute(
-                            "MATCH (d:Directory {path: $dir}) MERGE (f:Function {name: $name, file: $file}) MERGE (d)-[:CONTAINS]->(f)",
-                            {"dir": os.path.dirname(file_path), "name": name, "file": file_path}
+                            "MATCH (m:Module {path: $file}) MERGE (f:Function {id: $id}) SET f.name = $name, f.file = $file MERGE (m)-[:MOD_TO_FUNC]->(f)",
+                            {"id": node_id, "name": name, "file": file_path}
                         )
                     elif tag == "call" and current_func_name:
+                        caller_id = f"{file_path}:{current_func_name}"
+                        # We don't know the exact file of the callee easily without more analysis, 
+                        # so we use name as fallback for now or link to global functions.
+                        # For now, let's keep it simple.
                         ladybug_client.execute(
-                            "MERGE (caller:Function {name: $caller}) "
-                            "MERGE (callee:Function {name: $callee}) "
+                            "MATCH (caller:Function {id: $caller_id}) "
+                            "MERGE (callee:Function {id: $callee_name}) SET callee.name = $callee_name "
                             "MERGE (caller)-[:CALLS]->(callee)",
-                            {"caller": current_func_name, "callee": name}
+                            {"caller_id": caller_id, "callee_name": name}
                         )
 
     def _semantic_chunking_to_vector_db(self, file_path: str, tree, content: bytes):

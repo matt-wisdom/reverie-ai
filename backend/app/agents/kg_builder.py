@@ -24,7 +24,7 @@ class KGBuilder:
                     {"name": node.name, "doc": ast.get_docstring(node) or ""}
                 )
                 ladybug_client.execute(
-                    "MATCH (m:Module {path: $path}), (c:Class {name: $name}) MERGE (m)-[:CONTAINS]->(c)",
+                    "MATCH (m:Module {path: $path}), (c:Class {name: $name}) MERGE (m)-[:MOD_TO_CLASS]->(c)",
                     {"path": path, "name": node.name}
                 )
                 
@@ -34,7 +34,7 @@ class KGBuilder:
                     {"name": node.name, "sig": node.name, "is_method": False} # Simplified
                 )
                 ladybug_client.execute(
-                    "MATCH (m:Module {path: $path}), (f:Function {name: $name}) MERGE (m)-[:CONTAINS]->(f)",
+                    "MATCH (m:Module {path: $path}), (f:Function {name: $name}) MERGE (m)-[:MOD_TO_FUNC]->(f)",
                     {"path": path, "name": node.name}
                 )
         

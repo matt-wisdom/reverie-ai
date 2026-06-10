@@ -10,8 +10,10 @@ Base = declarative_base()
 class Project(Base):
     __tablename__ = "projects"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    repo_url = Column(String)
+    tag = Column(String, unique=True, index=True)
+    name = Column(String, index=True)
+    root_path = Column(String)
+    repo_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     reports = relationship("Report", back_populates="project")
 
