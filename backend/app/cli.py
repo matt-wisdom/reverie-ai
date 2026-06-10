@@ -18,10 +18,19 @@ logger = get_logger("reverie-cli")
 
 app = typer.Typer(help="Reverie Code Ingestion CLI")
 
+DEFAULT_SKIP_DIRS = [
+    ".git", "node_modules", "__pycache__", "venv", ".venv", 
+    "dist", "build", ".reverie.yaml", ".pytest_cache", 
+    "chroma_data", "chroma_db", "dataset", ".idea", ".vscode"
+]
+
 @app.command()
 def init(
     project_folder: Path = typer.Argument(..., help="Path to the project folder"),
-    tag: Optional[str] = typer.Option(None, "--tag", help="Optional project ID/tag")
+    tag: Optional[str] = typer.Option(None, "--tag", help="Optional project ID/tag"),
+    min_severity: str = typer.Option("medium", help="Minimum severity threshold (low, medium, high, critical)"),
+    auto_gen_tests: bool = typer.Option(True, help="Automatically generate tests"),
+    min_coverage: int = typer.Option(80, help="Minimum test coverage percentage")
 ):
     """Initialize a project with a .reverie.yaml config file."""
     if not project_folder.exists():
@@ -33,8 +42,15 @@ def init(
     
     config_data = {
         "project_id": project_id,
+        "name": project_folder.name,
         "path": str(project_folder.absolute()),
-        "name": project_folder.name
+        "configs": {
+            "min_severity": min_severity,
+            "skip_dirs": DEFAULT_SKIP_DIRS,
+            "auto_gen_tests": auto_gen_tests,
+            "min_coverage": min_coverage,
+            "custom_rules": []
+        }
     }
 
     with open(config_path, "w") as f:
@@ -47,13 +63,22 @@ def init(
         new_project = Project(
             tag=project_id,
             name=project_folder.name,
-            root_path=str(project_folder.absolute())
+            root_path=str(project_folder.absolute()),
+            min_severity=min_severity,
+            skip_dirs=DEFAULT_SKIP_DIRS,
+            auto_gen_tests=auto_gen_tests,
+            min_coverage=min_coverage,
+            custom_rules=[]
         )
         db.add(new_project)
         db.commit()
         logger.info(f"Project '{project_folder.name}' registered globally with tag: {project_id}")
     else:
-        logger.info(f"Project with tag {project_id} already registered.")
+        logger.info(f"Project with tag {project_id} already registered. Updating configs...")
+        existing.min_severity = min_severity
+        existing.auto_gen_tests = auto_gen_tests
+        existing.min_coverage = min_coverage
+        db.commit()
     db.close()
     
     # Initialize project-specific metadata DB
@@ -91,8 +116,10 @@ def load(tag: str):
 
     typer.echo(f"Loading project: {tag} from {project_path}")
     
+    skip_dirs = project.skip_dirs if project else []
+    
     from .agents.ingestion import IngestionPipeline
-    pipeline = IngestionPipeline(tag=tag)
+    pipeline = IngestionPipeline(tag=tag, skip_dirs=skip_dirs)
     asyncio.run(pipeline.process_codebase(project_path))
     
     typer.echo("Ingestion complete.")

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -14,6 +14,14 @@ class Project(Base):
     name = Column(String, index=True)
     root_path = Column(String)
     repo_url = Column(String, nullable=True)
+    
+    # Configs
+    min_severity = Column(String, default="medium")
+    skip_dirs = Column(JSON, default=list)
+    auto_gen_tests = Column(Boolean, default=True)
+    min_coverage = Column(Integer, default=80)
+    custom_rules = Column(JSON, default=list)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     reports = relationship("Report", back_populates="project")
 

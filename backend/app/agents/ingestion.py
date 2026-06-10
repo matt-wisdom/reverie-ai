@@ -26,14 +26,17 @@ LANGUAGES = {
 }
 
 class IngestionPipeline:
-    def __init__(self, tag: str):
+    def __init__(self, tag: str, skip_dirs: list[str] = None):
         self.tag = tag
         self.project_dir = get_project_dir(tag)
-        self.ignore_list = {
+        self.ignore_list = set(skip_dirs) if skip_dirs else {
             ".git", "node_modules", "__pycache__", "venv", ".venv", 
             "dist", "build", ".reverie.yaml", ".pytest_cache", 
             "chroma_data", "chroma_db", "dataset", ".idea", ".vscode"
         }
+        # Ensure .reverie.yaml is always ignored
+        self.ignore_list.add(".reverie.yaml")
+        
         self.config_files = {"CLAUDE.md", "REVERIE.md", "AGENTS.md", "GEMINI.md"}
         self.parsers = {ext: Parser(lang) for ext, lang in LANGUAGES.items()}
         
