@@ -1,15 +1,30 @@
-import ladybug
 import os
 import shutil
+import real_ladybug as ladybug
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+import threading
+
+_client_cache = {}
+_cache_lock = threading.Lock()
+
+
 class LadybugClient:
     def __init__(self, db_path: str):
-        self.db_path = str(db_path)
-        self._db = None
-        self._conn = None
+        path_str = str(db_path)
+        with _cache_lock:
+            if path_str in _client_cache:
+                self.db_path = _client_cache[path_str].db_path
+                self._db = _client_cache[path_str]._db
+                self._conn = _client_cache[path_str]._conn
+                return
+
+            self.db_path = path_str
+            self._db = None
+            self._conn = None
+            _client_cache[path_str] = self
 
     @property
     def db(self):
@@ -19,7 +34,9 @@ class LadybugClient:
             except Exception as e:
                 logger.error(f"Failed to open LadybugDB at {self.db_path}: {e}")
                 if "Corrupted" in str(e):
-                    logger.warning("Attempting to recover by deleting corrupted DB files...")
+                    logger.warning(
+                        "Attempting to recover by deleting corrupted DB files..."
+                    )
                     if os.path.exists(self.db_path):
                         shutil.rmtree(self.db_path)
                     self._db = ladybug.Database(self.db_path)
@@ -51,7 +68,7 @@ class LadybugClient:
                 "Directory(path STRING, summary STRING, context STRING, PRIMARY KEY (path))",
                 "Module(path STRING, content STRING, PRIMARY KEY (path))",
                 "Class(id STRING, name STRING, docstring STRING, file STRING, PRIMARY KEY (id))",
-                "Function(id STRING, name STRING, signature STRING, is_method BOOLEAN, file STRING, PRIMARY KEY (id))"
+                "Function(id STRING, name STRING, signature STRING, is_method BOOLEAN, file STRING, PRIMARY KEY (id))",
             ],
             "REL": [
                 "FINDING_IN_PROJ(FROM Finding TO Project)",
@@ -68,8 +85,8 @@ class LadybugClient:
                 "MOD_TO_CLASS(FROM Module TO Class)",
                 "MOD_TO_FUNC(FROM Module TO Function)",
                 "CLASS_TO_FUNC(FROM Class TO Function)",
-                "CALLS(FROM Function TO Function)"
-            ]
+                "CALLS(FROM Function TO Function)",
+            ],
         }
 
         for node_table in tables["NODE"]:

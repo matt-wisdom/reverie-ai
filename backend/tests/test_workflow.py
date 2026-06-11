@@ -8,43 +8,68 @@ os.environ["GEMINI_API_KEY"] = "fake_key"
 
 import pytest
 
+
 @pytest.mark.asyncio
 async def test_workflow_execution():
-    # Explicitly import to ensure attributes exist for patching
-    import app.graph.workflow
-    
-    # Patch the clients where they are used in the workflow
-    with patch("app.graph.workflow.LadybugClient"), \
-         patch("app.graph.workflow.get_project_dir"):
-        
+    # Patch the clients where they are used (in the nodes or agents)
+    with (
+        patch("app.agents.bug_detector.LadybugClient"),
+        patch("app.agents.bug_detector.ChromaClient"),
+        patch("app.graph.workflow.get_project_dir"),
+    ):
         from app.graph.workflow import app_graph
-        
+
         initial_state = {
             "project_tag": "test-tag",
+            "project_config": {"max_iterations": 5},
             "messages": [],
             "code": "def hello(): print('world')",
-            "review_results": [],
-            "vulnerability_results": [],
-            "test_results": [],
+            "review_mode": "full",
+            "target_agent": None,
+            "files_to_review": [
+                {
+                    "path": "test.py",
+                    "content": "print(1)",
+                    "language": "py",
+                    "priority": 0,
+                    "assigned_agents": [
+                        "security",
+                        "bug_detector",
+                        "smell_detector",
+                        "test_writer",
+                    ],
+                }
+            ],
+            "bug_findings": [],
+            "security_findings": [],
+            "smell_findings": [],
+            "generated_tests": [],
+            "next_action": "start",
+            "critical_found": False,
             "final_report": "",
-            "current_task": ""
         }
-        
-        with patch("app.graph.workflow.KGBuilder") as mock_kg_class, \
-             patch("app.graph.workflow.ReviewerAgent.run") as mock_rev, \
-             patch("app.graph.workflow.ScannerAgent.run") as mock_scan, \
-             patch("app.graph.workflow.TestGenAgent.run") as mock_test, \
-             patch("app.graph.workflow.ReporterAgent.run") as mock_rep:
-            
-            mock_kg_instance = MagicMock()
-            mock_kg_class.return_value = mock_kg_instance
-            mock_kg_instance.build_from_code.return_value = "KG Done"
-            
-            mock_rev.return_value = {"review_results": ["Good"]}
-            mock_scan.return_value = {"vulnerability_results": ["Clean"]}
-            mock_test.return_value = {"test_results": ["Tests Done"]}
+
+        # Patch the nodes directly in workflow.py to test the orchestration
+        with (
+            patch("app.graph.workflow.BugDetectorAgent") as mock_bug_agent_class,
+            patch("app.graph.workflow.security_node") as mock_sec,
+            patch("app.graph.workflow.smell_node") as mock_smell,
+            patch("app.graph.workflow.test_writer_node") as mock_test,
+            patch("app.graph.workflow.ReporterAgent.run") as mock_rep,
+        ):
+            mock_bug_instance = MagicMock()
+            mock_bug_agent_class.return_value = mock_bug_instance
+            mock_bug_instance.run = AsyncMock(return_value={"bug_findings": []})
+
+            mock_sec.return_value = {"security_findings": []}
+            mock_smell.return_value = {"smell_findings": []}
+            mock_test.return_value = {"generated_tests": []}
             mock_rep.return_value = {"final_report": "All good"}
-            
+
             final_state = await app_graph.ainvoke(initial_state)
-            
-            assert final_state["final_report"] == "All good"
+
+            assert "# Review Report for test-tag" in final_state["final_report"]
+            assert "Bugs Found" in final_state["final_report"]
+
+
+from unittest.mock import AsyncMock

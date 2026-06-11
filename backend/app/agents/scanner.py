@@ -1,5 +1,6 @@
 from ..graph.state import AgentState
 
+
 class ScannerAgent:
     @staticmethod
     def run(state: AgentState):

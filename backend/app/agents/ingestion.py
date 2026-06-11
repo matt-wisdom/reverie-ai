@@ -11,7 +11,12 @@ import google.generativeai as genai
 from ..db.ladybug_db import LadybugClient
 from ..vector_store.chroma_client import ChromaClient
 from ..core.logging_config import get_logger
-from ..core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY, gemini_limiter, get_project_dir
+from ..core.config import (
+    GEMINI_MODEL_TYPE,
+    GEMINI_API_KEY,
+    gemini_limiter,
+    get_project_dir,
+)
 
 logger = get_logger(__name__)
 
@@ -29,22 +34,40 @@ LANGUAGES = {
 
 # Regex for suppression comments
 REVERIE_IGNORE_REGEX = re.compile(r"reverie:\s*ignore\s*-\s*(.*)", re.IGNORECASE)
-REVERIE_SUPPRESS_REGEX = re.compile(r"reverie:\s*suppress\s*([a-zA-Z0-9_-]+)\s*-\s*(.*)", re.IGNORECASE)
+REVERIE_SUPPRESS_REGEX = re.compile(
+    r"reverie:\s*suppress\s*([a-zA-Z0-9_-]+)\s*-\s*(.*)", re.IGNORECASE
+)
+
 
 class IngestionPipeline:
     def __init__(self, tag: str, skip_dirs: list[str] = None):
         self.tag = tag
         self.project_dir = get_project_dir(tag)
-        self.ignore_list = set(skip_dirs) if skip_dirs else {
-            ".git", "node_modules", "__pycache__", "venv", ".venv", 
-            "dist", "build", ".reverie.yaml", ".pytest_cache", 
-            "chroma_data", "chroma_db", "dataset", ".idea", ".vscode"
-        }
+        self.ignore_list = (
+            set(skip_dirs)
+            if skip_dirs
+            else {
+                ".git",
+                "node_modules",
+                "__pycache__",
+                "venv",
+                ".venv",
+                "dist",
+                "build",
+                ".reverie.yaml",
+                ".pytest_cache",
+                "chroma_data",
+                "chroma_db",
+                "dataset",
+                ".idea",
+                ".vscode",
+            }
+        )
         self.ignore_list.add(".reverie.yaml")
-        
+
         self.config_files = {"CLAUDE.md", "REVERIE.md", "AGENTS.md", "GEMINI.md"}
         self.parsers = {ext: Parser(lang) for ext, lang in LANGUAGES.items()}
-        
+
         self.ladybug_client = LadybugClient(db_path=self.project_dir / "graph_db")
         self.chroma_client = ChromaClient(path=self.project_dir / "vector_db")
 
@@ -52,21 +75,21 @@ class IngestionPipeline:
         """Main entry point for repo ingestion."""
         logger.info(f"Starting codebase ingestion for project {self.tag}: {root_path}")
         self.ladybug_client.init_schema()
-        
+
         # 1. Initialize Project Node
         now = datetime.utcnow().isoformat()
         self.ladybug_client.execute(
             "MERGE (p:Project {id: $id}) SET p.name = $name, p.created_at = $now, p.last_reviewed_at = $now",
-            {"id": self.tag, "name": project_name, "now": now}
+            {"id": self.tag, "name": project_name, "now": now},
         )
-        
+
         for root, dirs, files in os.walk(root_path):
             dirs[:] = [d for d in dirs if d not in self.ignore_list]
-            
+
             folder_context = self._get_folder_context(root, files)
             summary = await self._generate_folder_summary(root, files, folder_context)
             self._store_folder_metadata(root, summary, folder_context)
-            
+
             for file in files:
                 ext = file.split(".")[-1]
                 if ext in self.parsers or ext == "vue":
@@ -88,7 +111,9 @@ class IngestionPipeline:
                     logger.error(f"Error reading config file {cfg}: {e}")
         return context
 
-    async def _generate_folder_summary(self, path: str, files: list[str], context: str) -> str:
+    async def _generate_folder_summary(
+        self, path: str, files: list[str], context: str
+    ) -> str:
         """Uses Gemini to summarize the purpose of a folder."""
         logger.info(f"Generating AI summary for folder: {path}")
         prompt = f"Summarize the purpose and architecture of the folder '{path}' based on these files: {files}. Context: {context}"
@@ -105,7 +130,7 @@ class IngestionPipeline:
         logger.debug(f"Storing folder metadata in KG for: {path}")
         self.ladybug_client.execute(
             "MERGE (d:Directory {path: $path}) SET d.summary = $summary, d.context = $context",
-            {"path": path, "summary": summary, "context": context}
+            {"path": path, "summary": summary, "context": context},
         )
 
     async def _process_file(self, file_path: str, ext: str):
@@ -113,16 +138,16 @@ class IngestionPipeline:
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
-            
+
             # 2. Update File Node
             now = datetime.utcnow().isoformat()
             self.ladybug_client.execute(
                 "MERGE (f:File {path: $path}) SET f.language = $lang, f.last_seen = $now",
-                {"path": file_path, "lang": ext, "now": now}
+                {"path": file_path, "lang": ext, "now": now},
             )
             self.ladybug_client.execute(
                 "MATCH (f:File {path: $path}), (p:Project {id: $pid}) MERGE (f)-[:FILE_IN_PROJ]->(p)",
-                {"path": file_path, "pid": self.tag}
+                {"path": file_path, "pid": self.tag},
             )
 
             # 3. Parse Suppressions
@@ -131,13 +156,15 @@ class IngestionPipeline:
             parser = self.parsers.get(ext)
             if not parser and ext == "vue":
                 parser = self.parsers.get("js")
-                
+
             if parser:
                 tree = parser.parse(content)
                 self._extract_symbols_to_kg(file_path, tree, content, ext)
                 self._semantic_chunking_to_vector_db(file_path, tree, content)
             else:
-                logger.warning(f"No AST parser found for {ext}. Using fallback chunking for {file_path}")
+                logger.warning(
+                    f"No AST parser found for {ext}. Using fallback chunking for {file_path}"
+                )
                 self._fallback_chunking(file_path, content)
         except Exception as e:
             logger.error(f"Failed to process file {file_path}: {e}")
@@ -150,7 +177,7 @@ class IngestionPipeline:
 
         for i, line in enumerate(lines):
             line_num = i + 1
-            
+
             # Match # reverie: ignore - reason
             ignore_match = REVERIE_IGNORE_REGEX.search(line)
             if ignore_match:
@@ -158,7 +185,13 @@ class IngestionPipeline:
                 sid = f"suppress:{file_path}:{line_num}"
                 self.ladybug_client.execute(
                     "MERGE (s:Suppression {suppression_id: $sid}) SET s.rule_id = 'ALL', s.reason = $reason, s.file_path = $file, s.line = $line, s.created_at = $now",
-                    {"sid": sid, "reason": reason, "file": file_path, "line": line_num, "now": now}
+                    {
+                        "sid": sid,
+                        "reason": reason,
+                        "file": file_path,
+                        "line": line_num,
+                        "now": now,
+                    },
                 )
                 continue
 
@@ -170,7 +203,14 @@ class IngestionPipeline:
                 sid = f"suppress:{file_path}:{line_num}:{rule_id}"
                 self.ladybug_client.execute(
                     "MERGE (s:Suppression {suppression_id: $sid}) SET s.rule_id = $rule, s.reason = $reason, s.file_path = $file, s.line = $line, s.created_at = $now",
-                    {"sid": sid, "rule": rule_id, "reason": reason, "file": file_path, "line": line_num, "now": now}
+                    {
+                        "sid": sid,
+                        "rule": rule_id,
+                        "reason": reason,
+                        "file": file_path,
+                        "line": line_num,
+                        "now": now,
+                    },
                 )
 
     def _extract_symbols_to_kg(self, file_path: str, tree, content: bytes, ext: str):
@@ -183,7 +223,7 @@ class IngestionPipeline:
             "MATCH (d:Directory {path: $dir}) "
             "MERGE (m:Module {path: $path}) "
             "MERGE (d)-[:DIR_TO_MODULE]->(m)",
-            {"dir": os.path.dirname(file_path), "path": file_path}
+            {"dir": os.path.dirname(file_path), "path": file_path},
         )
 
         # Language-specific queries for symbols AND calls
@@ -220,32 +260,34 @@ class IngestionPipeline:
                 (function_declaration name: (identifier) @func)
                 (method_definition name: (property_identifier) @func)
                 (call_expression function: (identifier) @call)
-            """
+            """,
         }
-        
+
         query_str = queries.get(ext, queries["js"])
         query = Query(lang, query_str)
         cursor = QueryCursor(query)
         matches = cursor.matches(tree.root_node)
-        
+
         current_func_name = None
         for _, captures in matches:
             for tag, nodes in captures.items():
                 for node in nodes:
-                    name = content[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
-                    
+                    name = content[node.start_byte : node.end_byte].decode(
+                        "utf-8", errors="ignore"
+                    )
+
                     if tag == "class":
                         node_id = f"{file_path}:{name}"
                         self.ladybug_client.execute(
                             "MATCH (m:Module {path: $file}) MERGE (c:Class {id: $id}) SET c.name = $name, c.file = $file MERGE (m)-[:MOD_TO_CLASS]->(c)",
-                            {"id": node_id, "name": name, "file": file_path}
+                            {"id": node_id, "name": name, "file": file_path},
                         )
                     elif tag == "func":
                         current_func_name = name
                         node_id = f"{file_path}:{name}"
                         self.ladybug_client.execute(
                             "MATCH (m:Module {path: $file}) MERGE (f:Function {id: $id}) SET f.name = $name, f.file = $file MERGE (m)-[:MOD_TO_FUNC]->(f)",
-                            {"id": node_id, "name": name, "file": file_path}
+                            {"id": node_id, "name": name, "file": file_path},
                         )
                     elif tag == "call" and current_func_name:
                         caller_id = f"{file_path}:{current_func_name}"
@@ -253,25 +295,33 @@ class IngestionPipeline:
                             "MATCH (caller:Function {id: $caller_id}) "
                             "MERGE (callee:Function {id: $callee_name}) SET callee.name = $callee_name "
                             "MERGE (caller)-[:CALLS]->(callee)",
-                            {"caller_id": caller_id, "callee_name": name}
+                            {"caller_id": caller_id, "callee_name": name},
                         )
 
     def _semantic_chunking_to_vector_db(self, file_path: str, tree, content: bytes):
         chunks, metadatas, ids = [], [], []
-        
+
         def walk_for_chunks(node):
-            if node.type in ["class_definition", "function_definition", "class_declaration", "function_declaration", "method_definition"]:
-                chunk_text = content[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
+            if node.type in [
+                "class_definition",
+                "function_definition",
+                "class_declaration",
+                "function_declaration",
+                "method_definition",
+            ]:
+                chunk_text = content[node.start_byte : node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                )
                 if len(chunk_text.strip()) > 20:
                     chunks.append(chunk_text)
                     metadatas.append({"file_path": file_path, "type": node.type})
                     ids.append(f"{file_path}_{node.start_byte}")
-            
+
             for child in node.children:
                 walk_for_chunks(child)
 
         walk_for_chunks(tree.root_node)
-        
+
         if not chunks:
             text = content.decode("utf-8", errors="ignore")
             if text.strip():
@@ -288,5 +338,9 @@ class IngestionPipeline:
         lines = text.split("\n")
         chunk_size = 50
         for i in range(0, len(lines), chunk_size):
-            chunk = "\n".join(lines[i:i+chunk_size])
-            self.chroma_client.add_documents([chunk], [{"file_path": file_path, "type": "fallback"}], [f"{file_path}_fb_{i}"])
+            chunk = "\n".join(lines[i : i + chunk_size])
+            self.chroma_client.add_documents(
+                [chunk],
+                [{"file_path": file_path, "type": "fallback"}],
+                [f"{file_path}_fb_{i}"],
+            )

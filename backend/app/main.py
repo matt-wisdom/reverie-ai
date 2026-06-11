@@ -16,14 +16,17 @@ from .schemas.agent_schemas import ReviewRequest
 
 app = FastAPI(title="CodeRabbit-like Backend")
 
+
 @app.on_event("startup")
 def on_startup():
     init_db()
     ladybug_client.init_schema()
 
+
 @app.get("/")
 def read_root():
     return {"message": "CodeRabbit-like Backend is running"}
+
 
 @app.post("/review")
 async def run_review(request: ReviewRequest):
@@ -36,9 +39,9 @@ async def run_review(request: ReviewRequest):
         "vulnerability_results": [],
         "test_results": [],
         "final_report": "",
-        "current_task": "start"
+        "current_task": "start",
     }
-    
+
     # Run the graph
     result = await app_graph.ainvoke(initial_state)
     return result

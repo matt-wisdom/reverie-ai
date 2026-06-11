@@ -1,63 +1,81 @@
+from typing import List, Dict
 from langgraph.graph import StateGraph, END
-from .state import AgentState
-from ..agents.kg_builder import KGBuilder
-from ..agents.reviewer import ReviewerAgent
-from ..agents.scanner import ScannerAgent
-from ..agents.test_gen import TestGenAgent
+from langgraph.types import Send
+from .state import AgentState, Finding
+from ..agents.orchestrator import Orchestrator, get_fan_out_commands
 from ..agents.reporter import ReporterAgent
-from ..db.ladybug_db import LadybugClient
 from ..core.config import get_project_dir
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-def get_clients(state: AgentState):
-    tag = state["project_tag"]
+# --- Specialized Agent Wrapper Nodes ---
+
+from ..agents.bug_detector import BugDetectorAgent
+
+
+async def bug_detector_node(state: Dict):
+    """Expects a state with 'files' list and 'project_root' from Send."""
+    tag = state.get("project_tag", "default")
+    project_root = state.get("project_root", "")
     project_dir = get_project_dir(tag)
-    ladybug_client = LadybugClient(db_path=project_dir / "graph_db")
-    return ladybug_client
+    agent = BugDetectorAgent(tag=tag, project_dir=str(project_dir), project_root=project_root)
 
-# Define the nodes as simple wrappers around the agent classes
-def kg_builder_node(state: AgentState):
-    logger.info("Starting Knowledge Graph Builder")
-    ladybug_client = get_clients(state)
-    builder = KGBuilder(ladybug_client)
-    result = builder.build_from_code("current_file.py", state["code"])
-    return {"current_task": result}
+    findings = await agent.run(state)
+    return findings
 
-def reviewer_node(state: AgentState):
-    logger.info("Starting Reviewer Agent")
-    return ReviewerAgent.run(state)
 
-def scanner_node(state: AgentState):
-    logger.info("Starting Scanner Agent")
-    return ScannerAgent.run(state)
+def security_node(state: Dict):
+    logger.info(f"Security Agent processing {len(state['files'])} files")
+    return {"security_findings": []}
 
-def test_gen_node(state: AgentState):
-    logger.info("Starting Test Generator Agent")
-    return TestGenAgent.run(state)
 
-def reporter_node(state: AgentState):
-    logger.info("Starting Reporter Agent")
-    return ReporterAgent.run(state)
+def smell_node(state: Dict):
+    logger.info(f"Smell Detector processing {len(state['files'])} files")
+    return {"smell_findings": []}
 
-# Define the graph
+
+def test_writer_node(state: Dict):
+    logger.info(f"Test Writer processing {len(state['files'])} files")
+    return {"generated_tests": []}
+
+
+# --- Main Workflow ---
+
 workflow = StateGraph(AgentState)
 
-# Add nodes
-workflow.add_node("kg_builder", kg_builder_node)
-workflow.add_node("reviewer", reviewer_node)
-workflow.add_node("scanner", scanner_node)
-workflow.add_node("test_gen", test_gen_node)
-workflow.add_node("reporter", reporter_node)
+# Add Nodes
+workflow.add_node("orchestrator", Orchestrator.plan)
+workflow.add_node("bug_detector_agent", bug_detector_node)
+workflow.add_node("security_agent", security_node)
+workflow.add_node("smell_detector_agent", smell_node)
+workflow.add_node("test_writer_agent", test_writer_node)
+workflow.add_node("reporter", ReporterAgent.run)
 
-# Define edges
-workflow.set_entry_point("kg_builder")
-workflow.add_edge("kg_builder", "reviewer")
-workflow.add_edge("reviewer", "scanner")
-workflow.add_edge("scanner", "test_gen")
-workflow.add_edge("test_gen", "reporter")
+# Define Edges
+workflow.set_entry_point("orchestrator")
+
+# The Orchestrator decides where to send work in parallel
+workflow.add_conditional_edges(
+    "orchestrator",
+    get_fan_out_commands,
+    [
+        "bug_detector_agent",
+        "security_agent",
+        "smell_detector_agent",
+        "test_writer_agent",
+    ],
+)
+
+# All agents report back to the reporter after parallel completion
+# Note: In LangGraph, when multiple 'Send' branches finish,
+# they automatically join if they lead to the same node.
+workflow.add_edge("bug_detector_agent", "reporter")
+workflow.add_edge("security_agent", "reporter")
+workflow.add_edge("smell_detector_agent", "reporter")
+workflow.add_edge("test_writer_agent", "reporter")
+
 workflow.add_edge("reporter", END)
 
-# Compile the graph
+# Compile
 app_graph = workflow.compile()

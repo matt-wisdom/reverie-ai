@@ -1,16 +1,20 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+
 def test_ladybug_client_execute():
     from app.db.ladybug_db import LadybugClient
+
     with patch("ladybug.Database"), patch("ladybug.Connection"):
         client = LadybugClient(db_path="/tmp/test_db")
         with patch.object(client, "execute") as mock_exec:
             client.execute("CREATE NODE TABLE Test(name STRING, PRIMARY KEY (name))")
             assert mock_exec.called
 
+
 def test_ladybug_init_schema():
     from app.db.ladybug_db import LadybugClient
+
     with patch("ladybug.Database"), patch("ladybug.Connection"):
         client = LadybugClient(db_path="/tmp/test_db")
         with patch.object(client, "execute") as mock_exec:
