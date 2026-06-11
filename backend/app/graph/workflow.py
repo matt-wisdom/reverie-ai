@@ -5,14 +5,24 @@ from ..agents.reviewer import ReviewerAgent
 from ..agents.scanner import ScannerAgent
 from ..agents.test_gen import TestGenAgent
 from ..agents.reporter import ReporterAgent
+from ..db.ladybug_db import LadybugClient
+from ..core.config import get_project_dir
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+def get_clients(state: AgentState):
+    tag = state["project_tag"]
+    project_dir = get_project_dir(tag)
+    ladybug_client = LadybugClient(db_path=project_dir / "graph_db")
+    return ladybug_client
+
 # Define the nodes as simple wrappers around the agent classes
 def kg_builder_node(state: AgentState):
     logger.info("Starting Knowledge Graph Builder")
-    result = KGBuilder.build_from_code("current_file.py", state["code"])
+    ladybug_client = get_clients(state)
+    builder = KGBuilder(ladybug_client)
+    result = builder.build_from_code("current_file.py", state["code"])
     return {"current_task": result}
 
 def reviewer_node(state: AgentState):

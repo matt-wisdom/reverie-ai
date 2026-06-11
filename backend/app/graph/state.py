@@ -2,6 +2,8 @@ from typing import TypedDict, List, Annotated
 import operator
 
 class AgentState(TypedDict):
+    # Project Info
+    project_tag: str
     # The message history
     messages: Annotated[List[dict], operator.add]
     # The code to review

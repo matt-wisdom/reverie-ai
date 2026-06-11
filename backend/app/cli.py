@@ -17,6 +17,8 @@ setup_logging()
 logger = get_logger("reverie-cli")
 
 app = typer.Typer(help="Reverie Code Ingestion CLI")
+context_app = typer.Typer(help="Manage project context documents")
+app.add_typer(context_app, name="context")
 
 DEFAULT_SKIP_DIRS = [
     ".git", "node_modules", "__pycache__", "venv", ".venv", 
@@ -124,6 +126,32 @@ def load(tag: str):
     
     typer.echo("Ingestion complete.")
     db.close()
+
+@context_app.command("add")
+def context_add(
+    tag: str = typer.Argument(..., help="Project tag"),
+    source: str = typer.Argument(..., help="File path or URL to the document"),
+    doc_type: str = typer.Option("reference", help="Type of document (style_guide, adr, reference, runbook)")
+):
+    """Add a document (PDF, MD, TXT) to the project context."""
+    db = get_registry_session()
+    project = db.query(Project).filter(Project.tag == tag).first()
+    if not project:
+        typer.echo(f"Error: Project with tag {tag} not found.")
+        raise typer.Exit(1)
+    
+    project_dir = get_project_dir(tag)
+    from .agents.context_processor import ContextProcessor
+    processor = ContextProcessor(tag=tag, project_dir=project_dir)
+    
+    try:
+        doc_id = asyncio.run(processor.add_context(source, doc_type))
+        typer.echo(f"Successfully added context document. ID: {doc_id}")
+    except Exception as e:
+        typer.echo(f"Error adding context: {e}")
+        raise typer.Exit(1)
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     app()

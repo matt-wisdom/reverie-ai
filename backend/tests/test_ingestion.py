@@ -1,26 +1,14 @@
-import os
-import sys
-from unittest.mock import MagicMock, patch
-
-# Mock environment variables for testing
-os.environ["GOOGLE_API_KEY"] = "fake_key"
-os.environ["GEMINI_API_KEY"] = "fake_key"
-
-# Proper way to mock packages with submodules
-chroma_mock = MagicMock()
-sys.modules["chromadb"] = chroma_mock
-sys.modules["chromadb.utils"] = MagicMock()
-sys.modules["chromadb.utils.embedding_functions"] = MagicMock()
-sys.modules["ladybug"] = MagicMock()
-
 import pytest
-from app.agents.ingestion import IngestionPipeline
+import os
+from unittest.mock import MagicMock, patch, AsyncMock
 
 @pytest.fixture
 def ingestion_pipeline():
-    with patch("app.agents.ingestion.chroma_client"), \
-         patch("app.agents.ingestion.ladybug_client"):
-        return IngestionPipeline()
+    # Use a side effect to ensure the module is fully loaded before constructor is called
+    with patch("app.agents.ingestion.ChromaClient"), \
+         patch("app.agents.ingestion.LadybugClient"):
+        from app.agents.ingestion import IngestionPipeline
+        return IngestionPipeline(tag="test-tag")
 
 @pytest.mark.asyncio
 async def test_get_folder_context(ingestion_pipeline, tmp_path):
@@ -34,14 +22,19 @@ async def test_get_folder_context(ingestion_pipeline, tmp_path):
     assert "--- GEMINI.md ---" in context
 
 @pytest.mark.asyncio
-@patch("app.agents.ingestion.model.generate_content_async")
-async def test_generate_folder_summary(mock_gen, ingestion_pipeline):
+async def test_generate_folder_summary(ingestion_pipeline):
     mock_response = MagicMock()
     mock_response.text = "This is a summary"
-    mock_gen.return_value = mock_response
     
-    summary = await ingestion_pipeline._generate_folder_summary("/path", ["a.py"], "context")
-    assert summary == "This is a summary"
+    import app.agents.ingestion as ingestion_mod
+    # Ensure model exists
+    if not hasattr(ingestion_mod, "model"):
+        ingestion_mod.model = MagicMock()
+        
+    with patch.object(ingestion_mod.model, "generate_content_async", new_callable=AsyncMock) as mock_gen:
+        mock_gen.return_value = mock_response
+        summary = await ingestion_pipeline._generate_folder_summary("/path", ["a.py"], "context")
+        assert summary == "This is a summary"
 
 @pytest.mark.asyncio
 async def test_process_file_python(ingestion_pipeline, tmp_path):
@@ -49,8 +42,10 @@ async def test_process_file_python(ingestion_pipeline, tmp_path):
     f = tmp_path / "test.py"
     f.write_text(code)
     
-    with patch("app.agents.ingestion.ladybug_client.execute") as mock_kg, \
-         patch("app.agents.ingestion.chroma_client.add_documents") as mock_chroma:
-        await ingestion_pipeline._process_file(str(f), "py")
-        assert mock_kg.called
-        assert mock_chroma.called
+    ingestion_pipeline.ladybug_client = MagicMock()
+    ingestion_pipeline.chroma_client = MagicMock()
+    
+    await ingestion_pipeline._process_file(str(f), "py")
+    
+    assert ingestion_pipeline.ladybug_client.execute.called
+    assert ingestion_pipeline.chroma_client.add_documents.called

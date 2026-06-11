@@ -1,10 +1,12 @@
 import os
+import re
+import uuid
+import asyncio
+from datetime import datetime
 import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
-from tree_sitter import QueryCursor
-
-from tree_sitter import Language, Parser
+from tree_sitter import QueryCursor, Language, Parser
 import google.generativeai as genai
 from ..db.ladybug_db import LadybugClient
 from ..vector_store.chroma_client import ChromaClient
@@ -25,6 +27,10 @@ LANGUAGES = {
     "tsx": Language(tsts.language_tsx()),
 }
 
+# Regex for suppression comments
+REVERIE_IGNORE_REGEX = re.compile(r"reverie:\s*ignore\s*-\s*(.*)", re.IGNORECASE)
+REVERIE_SUPPRESS_REGEX = re.compile(r"reverie:\s*suppress\s*([a-zA-Z0-9_-]+)\s*-\s*(.*)", re.IGNORECASE)
+
 class IngestionPipeline:
     def __init__(self, tag: str, skip_dirs: list[str] = None):
         self.tag = tag
@@ -34,21 +40,25 @@ class IngestionPipeline:
             "dist", "build", ".reverie.yaml", ".pytest_cache", 
             "chroma_data", "chroma_db", "dataset", ".idea", ".vscode"
         }
-        # Ensure .reverie.yaml is always ignored
         self.ignore_list.add(".reverie.yaml")
         
         self.config_files = {"CLAUDE.md", "REVERIE.md", "AGENTS.md", "GEMINI.md"}
         self.parsers = {ext: Parser(lang) for ext, lang in LANGUAGES.items()}
         
-        # Project-specific clients
         self.ladybug_client = LadybugClient(db_path=self.project_dir / "graph_db")
         self.chroma_client = ChromaClient(path=self.project_dir / "vector_db")
 
-    async def process_codebase(self, root_path: str):
+    async def process_codebase(self, root_path: str, project_name: str = "Unknown"):
         """Main entry point for repo ingestion."""
         logger.info(f"Starting codebase ingestion for project {self.tag}: {root_path}")
-        # Initialize KG Schema for this project
         self.ladybug_client.init_schema()
+        
+        # 1. Initialize Project Node
+        now = datetime.utcnow().isoformat()
+        self.ladybug_client.execute(
+            "MERGE (p:Project {id: $id}) SET p.name = $name, p.created_at = $now, p.last_reviewed_at = $now",
+            {"id": self.tag, "name": project_name, "now": now}
+        )
         
         for root, dirs, files in os.walk(root_path):
             dirs[:] = [d for d in dirs if d not in self.ignore_list]
@@ -66,15 +76,20 @@ class IngestionPipeline:
         logger.info(f"Finished codebase ingestion for project {self.tag}")
 
     def _get_folder_context(self, path: str, files: list[str]) -> str:
+        """Finds and reads architecture hint files (e.g., GEMINI.md)."""
         context = ""
         for cfg in self.config_files:
             if cfg in files:
                 logger.debug(f"Found architecture hint file: {cfg} in {path}")
-                with open(os.path.join(path, cfg), "r") as f:
-                    context += f"\n--- {cfg} ---\n{f.read()}"
+                try:
+                    with open(os.path.join(path, cfg), "r") as f:
+                        context += f"\n--- {cfg} ---\n{f.read()}"
+                except Exception as e:
+                    logger.error(f"Error reading config file {cfg}: {e}")
         return context
 
     async def _generate_folder_summary(self, path: str, files: list[str], context: str) -> str:
+        """Uses Gemini to summarize the purpose of a folder."""
         logger.info(f"Generating AI summary for folder: {path}")
         prompt = f"Summarize the purpose and architecture of the folder '{path}' based on these files: {files}. Context: {context}"
         try:
@@ -86,6 +101,7 @@ class IngestionPipeline:
             return f"Error generating summary: {e}"
 
     def _store_folder_metadata(self, path: str, summary: str, context: str):
+        """Stores folder insights in LadybugDB Knowledge Graph."""
         logger.debug(f"Storing folder metadata in KG for: {path}")
         self.ladybug_client.execute(
             "MERGE (d:Directory {path: $path}) SET d.summary = $summary, d.context = $context",
@@ -93,11 +109,25 @@ class IngestionPipeline:
         )
 
     async def _process_file(self, file_path: str, ext: str):
-        """AST Extraction & Semantic Chunking."""
+        """AST Extraction, Suppression Parsing & Semantic Chunking."""
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
             
+            # 2. Update File Node
+            now = datetime.utcnow().isoformat()
+            self.ladybug_client.execute(
+                "MERGE (f:File {path: $path}) SET f.language = $lang, f.last_seen = $now",
+                {"path": file_path, "lang": ext, "now": now}
+            )
+            self.ladybug_client.execute(
+                "MATCH (f:File {path: $path}), (p:Project {id: $pid}) MERGE (f)-[:FILE_IN_PROJ]->(p)",
+                {"path": file_path, "pid": self.tag}
+            )
+
+            # 3. Parse Suppressions
+            self._parse_suppressions(file_path, content)
+
             parser = self.parsers.get(ext)
             if not parser and ext == "vue":
                 parser = self.parsers.get("js")
@@ -111,6 +141,37 @@ class IngestionPipeline:
                 self._fallback_chunking(file_path, content)
         except Exception as e:
             logger.error(f"Failed to process file {file_path}: {e}")
+
+    def _parse_suppressions(self, file_path: str, content: bytes):
+        """Find reverie:ignore and reverie:suppress in comments."""
+        text = content.decode("utf-8", errors="ignore")
+        lines = text.splitlines()
+        now = datetime.utcnow().isoformat()
+
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            
+            # Match # reverie: ignore - reason
+            ignore_match = REVERIE_IGNORE_REGEX.search(line)
+            if ignore_match:
+                reason = ignore_match.group(1).strip()
+                sid = f"suppress:{file_path}:{line_num}"
+                self.ladybug_client.execute(
+                    "MERGE (s:Suppression {suppression_id: $sid}) SET s.rule_id = 'ALL', s.reason = $reason, s.file_path = $file, s.line = $line, s.created_at = $now",
+                    {"sid": sid, "reason": reason, "file": file_path, "line": line_num, "now": now}
+                )
+                continue
+
+            # Match // reverie: suppress rule-id - reason
+            suppress_match = REVERIE_SUPPRESS_REGEX.search(line)
+            if suppress_match:
+                rule_id = suppress_match.group(1).strip()
+                reason = suppress_match.group(2).strip()
+                sid = f"suppress:{file_path}:{line_num}:{rule_id}"
+                self.ladybug_client.execute(
+                    "MERGE (s:Suppression {suppression_id: $sid}) SET s.rule_id = $rule, s.reason = $reason, s.file_path = $file, s.line = $line, s.created_at = $now",
+                    {"sid": sid, "rule": rule_id, "reason": reason, "file": file_path, "line": line_num, "now": now}
+                )
 
     def _extract_symbols_to_kg(self, file_path: str, tree, content: bytes, ext: str):
         """Uses Tree-sitter to map symbols and function calls across languages."""

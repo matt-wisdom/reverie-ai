@@ -10,3 +10,8 @@ wheels/
 .venv
 GEMINI.md
 CLAUDE.md
+
+explorer-session.json
+.fuse*
+
+.reverie/

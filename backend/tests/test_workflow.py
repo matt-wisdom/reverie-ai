@@ -2,40 +2,49 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+# Mock environment variables
 os.environ["GOOGLE_API_KEY"] = "fake_key"
 os.environ["GEMINI_API_KEY"] = "fake_key"
-sys.modules["chromadb"] = MagicMock()
-sys.modules["chromadb.utils"] = MagicMock()
-sys.modules["chromadb.utils.embedding_functions"] = MagicMock()
-sys.modules["ladybug"] = MagicMock()
 
 import pytest
-from app.graph.workflow import app_graph
 
 @pytest.mark.asyncio
 async def test_workflow_execution():
-    initial_state = {
-        "messages": [],
-        "code": "def hello(): print('world')",
-        "review_results": [],
-        "vulnerability_results": [],
-        "test_results": [],
-        "final_report": "",
-        "current_task": ""
-    }
+    # Explicitly import to ensure attributes exist for patching
+    import app.graph.workflow
     
-    with patch("app.agents.kg_builder.KGBuilder.build_from_code") as mock_kg, \
-         patch("app.agents.reviewer.ReviewerAgent.run") as mock_rev, \
-         patch("app.agents.scanner.ScannerAgent.run") as mock_scan, \
-         patch("app.agents.test_gen.TestGenAgent.run") as mock_test, \
-         patch("app.agents.reporter.ReporterAgent.run") as mock_rep:
+    # Patch the clients where they are used in the workflow
+    with patch("app.graph.workflow.LadybugClient"), \
+         patch("app.graph.workflow.get_project_dir"):
         
-        mock_kg.return_value = "KG Done"
-        mock_rev.return_value = {"review_results": ["Good"]}
-        mock_scan.return_value = {"vulnerability_results": ["Clean"]}
-        mock_test.return_value = {"test_results": ["Tests Done"]}
-        mock_rep.return_value = {"final_report": "All good"}
+        from app.graph.workflow import app_graph
         
-        final_state = await app_graph.ainvoke(initial_state)
+        initial_state = {
+            "project_tag": "test-tag",
+            "messages": [],
+            "code": "def hello(): print('world')",
+            "review_results": [],
+            "vulnerability_results": [],
+            "test_results": [],
+            "final_report": "",
+            "current_task": ""
+        }
         
-        assert final_state["final_report"] == "All good"
+        with patch("app.graph.workflow.KGBuilder") as mock_kg_class, \
+             patch("app.graph.workflow.ReviewerAgent.run") as mock_rev, \
+             patch("app.graph.workflow.ScannerAgent.run") as mock_scan, \
+             patch("app.graph.workflow.TestGenAgent.run") as mock_test, \
+             patch("app.graph.workflow.ReporterAgent.run") as mock_rep:
+            
+            mock_kg_instance = MagicMock()
+            mock_kg_class.return_value = mock_kg_instance
+            mock_kg_instance.build_from_code.return_value = "KG Done"
+            
+            mock_rev.return_value = {"review_results": ["Good"]}
+            mock_scan.return_value = {"vulnerability_results": ["Clean"]}
+            mock_test.return_value = {"test_results": ["Tests Done"]}
+            mock_rep.return_value = {"final_report": "All good"}
+            
+            final_state = await app_graph.ainvoke(initial_state)
+            
+            assert final_state["final_report"] == "All good"

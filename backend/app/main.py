@@ -29,6 +29,7 @@ def read_root():
 async def run_review(request: ReviewRequest):
     # Initialize state
     initial_state = {
+        "project_tag": request.project_name or "default",
         "messages": [],
         "code": request.code,
         "review_results": [],
