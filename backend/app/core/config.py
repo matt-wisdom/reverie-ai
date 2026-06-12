@@ -24,4 +24,5 @@ GEMINI_RPM = int(os.getenv("GEMINI_RPM", "15"))
 gemini_limiter = AsyncLimiter(GEMINI_RPM, 60)
 
 # ReAct Agent Settings
-REVERIE_MAX_ITERATIONS = int(os.getenv("REVERIE_MAX_ITERATIONS", "5"))
+REVERIE_MAX_ITERATIONS = int(os.getenv("REVERIE_MAX_ITERATIONS", "25"))
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")

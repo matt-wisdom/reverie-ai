@@ -11,6 +11,12 @@ class Finding(TypedDict):
     description: str
     file_path: str
     line: int
+    # Security-specific fields
+    rule_id: Optional[str]
+    owasp_category: Optional[str]
+    cwe_id: Optional[str]
+    remediation: Optional[str]
+    confidence: Optional[str]  # low, medium, high
 
 
 class FileToReview(TypedDict):
@@ -23,8 +29,8 @@ class FileToReview(TypedDict):
 
 class AgentState(TypedDict):
     project_tag: str
-    project_root: str # Path to the actual source code
-    project_config: Dict # Dynamic configuration from .reverie.yaml
+    project_root: str  # Path to the actual source code
+    project_config: Dict  # Dynamic configuration from .reverie.yaml
 
     review_mode: Literal["full", "diff", "single"]
     target_agent: Optional[str]  # for mode="single"

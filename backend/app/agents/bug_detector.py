@@ -11,7 +11,7 @@ from langgraph.prebuilt import ToolNode
 from ..graph.state import AgentState
 from ..db.ladybug_db import LadybugClient
 from ..vector_store.chroma_client import ChromaClient
-from ..core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY, REVERIE_MAX_ITERATIONS
+from ..core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY, REVERIE_MAX_ITERATIONS, gemini_limiter
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -107,14 +107,17 @@ class BugDetectorAgent:
             temperature=0
         ).bind_tools(self.tools)
 
-    def _call_model(self, state: AgentState):
+    async def _call_model(self, state: AgentState):
         messages = state["messages"]
         last_msg_content = messages[-1].content
         prompt_preview = "\n".join(str(last_msg_content).split("\n")[:5])
-        logger.info(f"--- AGENT PROMPT PREVIEW ---\n{prompt_preview}\n...")
+        logger.info(f"--- BUG AGENT PROMPT PREVIEW ---\n{prompt_preview}\n...")
         
         logger.info("Bug Detector thinking...")
-        response = self.llm.invoke(messages)
+        # RATE LIMITING
+        async with gemini_limiter:
+            response = await self.llm.ainvoke(messages)
+            
         logger.info(f"--- AI RESPONSE ---\n{response.content}\nTool Calls: {response.tool_calls}")
         return {"messages": [response]}
 
@@ -135,7 +138,6 @@ class BugDetectorAgent:
         for file_info in batch_state.get("files", []):
             logger.info(f"ReAct Investigation started for: {file_info['path']} (max_depth: {max_depth}, recursion_limit: {recursion_limit})")
             
-            # PUSH MODEL: Fetch relevant context documents before starting
             project_context = await self._get_relevant_context(file_info)
             
             workflow = StateGraph(AgentState)
@@ -156,7 +158,7 @@ PROJECT-SPECIFIC RULES & CONTEXT:
 {project_context}
 
 PLANNING STEPS:
-1. Understand file structure and check if it follows the PROJECT-SPECIFIC RULES above.
+1. Understand file structure.
 2. Trace data flow from inputs to sinks.
 3. Check cross-file dependencies if suspicious.
 4. Conclude only when enough evidence is gathered.
@@ -186,10 +188,10 @@ PLANNING STEPS:
         """Proactively retrieves documentation related to the current file."""
         query_text = f"Architecture, security rules, and coding standards for {file_info['path']}"
         try:
-            # Hybrid search in ChromaDB
-            results = self.chroma.query([query_text], n_results=3)
+            # RATE LIMITING for proactive retrieval
+            async with gemini_limiter:
+                results = self.chroma.query([query_text], n_results=3)
             
-            # Filter results to only include those from actual docs (ContextDoc chunks have doc_id)
             doc_chunks = []
             for r in results:
                 meta = r.get("metadata", {})

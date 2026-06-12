@@ -12,6 +12,7 @@ load_dotenv()
 from .db.session import get_registry_session, init_project_db
 from .db.models import Project
 from .core.logging_config import setup_logging, get_logger
+from .core.config import get_project_dir
 
 setup_logging()
 logger = get_logger("reverie-cli")
@@ -262,14 +263,77 @@ def review(
     typer.echo(f"Starting {mode} review for {tag} ({len(files_to_review)} files)...")
 
     from .graph.workflow import app_graph
+
     # Pass project-defined max_iterations to the graph recursion limit
     limit = initial_state["project_config"].get("max_iterations", 25)
-    final_state = asyncio.run(app_graph.ainvoke(initial_state, {"recursion_limit": limit}))
-
+    final_state = asyncio.run(
+        app_graph.ainvoke(initial_state, {"recursion_limit": limit})
+    )
 
     typer.echo("\n--- REVIEW COMPLETE ---")
     typer.echo(final_state.get("final_report", "No report generated."))
     db.close()
+
+
+@app.command()
+def summary(tag: str = typer.Argument(..., help="Project tag")):
+    """Get an AI-generated high-level summary of the entire codebase."""
+    db = get_registry_session()
+    project = db.query(Project).filter(Project.tag == tag).first()
+    if not project:
+        typer.echo(f"Error: Project with tag {tag} not found.")
+        raise typer.Exit(1)
+
+    project_dir = get_project_dir(tag)
+    from .db.ladybug_db import LadybugClient
+
+    client = LadybugClient(db_path=project_dir / "graph_db")
+
+    try:
+        # 1. Fetch all directory summaries from KG
+        res = client.execute("MATCH (d:Directory) RETURN d.path, d.summary")
+        summaries = []
+        if res.has_next():
+            df = res.get_as_df()
+            for _, row in df.iterrows():
+                summaries.append(f"Path: {row['d.path']}\nSummary: {row['d.summary']}")
+
+        if not summaries:
+            typer.echo("No ingestion data found. Please run 'reverie load' first.")
+            raise typer.Exit(1)
+
+        # 2. Synthesize with Gemini
+        typer.echo("Synthesizing codebase summary...")
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from .core.config import GEMINI_MODEL_TYPE, GEMINI_API_KEY
+
+        llm = ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL_TYPE, google_api_key=GEMINI_API_KEY
+        )
+
+        all_context = "\n\n".join(summaries)
+        prompt = f"""
+        You are a Senior Architect. Based on the following directory-level summaries, 
+        provide a comprehensive, high-level architectural overview of the project '{project.name}'.
+        
+        Focus on:
+        1. Core purpose of the project.
+        2. Key architectural layers and their interactions.
+        3. Tech stack and libraries used.
+        4. Entry points and main data flows.
+        
+        DIRECTORY SUMMARIES:
+        {all_context}
+        """
+
+        response = llm.invoke(prompt)
+        typer.echo("\n--- CODEBASE SUMMARY ---")
+        typer.echo(response.content)
+
+    except Exception as e:
+        typer.echo(f"Error generating summary: {e}")
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

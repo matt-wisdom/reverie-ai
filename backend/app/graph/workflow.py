@@ -19,20 +19,42 @@ async def bug_detector_node(state: Dict):
     tag = state.get("project_tag", "default")
     project_root = state.get("project_root", "")
     project_dir = get_project_dir(tag)
-    agent = BugDetectorAgent(tag=tag, project_dir=str(project_dir), project_root=project_root)
+    agent = BugDetectorAgent(
+        tag=tag, project_dir=str(project_dir), project_root=project_root
+    )
 
     findings = await agent.run(state)
     return findings
 
 
-def security_node(state: Dict):
-    logger.info(f"Security Agent processing {len(state['files'])} files")
-    return {"security_findings": []}
+from ..agents.security import SecurityAgent
 
 
-def smell_node(state: Dict):
-    logger.info(f"Smell Detector processing {len(state['files'])} files")
-    return {"smell_findings": []}
+async def security_node(state: Dict):
+    """Expects a state with 'files' list and 'project_root' from Send."""
+    tag = state.get("project_tag", "default")
+    project_root = state.get("project_root", "")
+    project_dir = get_project_dir(tag)
+    agent = SecurityAgent(
+        tag=tag, project_dir=str(project_dir), project_root=project_root
+    )
+
+    findings = await agent.run(state)
+    return findings
+
+
+from ..agents.smell_detector import SmellDetectorAgent
+
+
+async def smell_node(state: Dict):
+    """Expects a state with 'files' list and 'project_root' from Send."""
+    tag = state.get("project_tag", "default")
+    project_root = state.get("project_root", "")
+    project_dir = get_project_dir(tag)
+    agent = SmellDetectorAgent(tag=tag, project_dir=str(project_dir), project_root=project_root)
+
+    findings = await agent.run(state)
+    return findings
 
 
 def test_writer_node(state: Dict):
