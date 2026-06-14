@@ -31,9 +31,11 @@ class AgentState(TypedDict):
     project_tag: str
     project_root: str  # Path to the actual source code
     project_config: Dict  # Dynamic configuration from .reverie.yaml
+    user_prompt: Optional[str]  # Custom instructions to alter agent behavior
+    codebase_summary: Optional[str]  # AI-generated high-level overview
 
-    review_mode: Literal["full", "diff", "single"]
-    target_agent: Optional[str]  # for mode="single"
+    review_mode: Literal["full", "diff", "subset"]
+    target_agents: Optional[List[str]]  # for mode="subset"
 
     # Message history for ReAct agents
     messages: Annotated[Sequence[BaseMessage], add_messages]

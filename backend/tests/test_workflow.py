@@ -25,7 +25,7 @@ async def test_workflow_execution():
             "messages": [],
             "code": "def hello(): print('world')",
             "review_mode": "full",
-            "target_agent": None,
+            "target_agents": [],
             "files_to_review": [
                 {
                     "path": "test.py",

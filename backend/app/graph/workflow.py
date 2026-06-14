@@ -51,7 +51,9 @@ async def smell_node(state: Dict):
     tag = state.get("project_tag", "default")
     project_root = state.get("project_root", "")
     project_dir = get_project_dir(tag)
-    agent = SmellDetectorAgent(tag=tag, project_dir=str(project_dir), project_root=project_root)
+    agent = SmellDetectorAgent(
+        tag=tag, project_dir=str(project_dir), project_root=project_root
+    )
 
     findings = await agent.run(state)
     return findings

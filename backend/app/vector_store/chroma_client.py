@@ -6,7 +6,8 @@ from ..core.config import (
     GEMINI_API_KEY,
     GEMINI_MODEL_TYPE,
     GEMINI_EMBEDDING_MODEL,
-    gemini_limiter,
+    HF_EMBEDDING_MODEL,
+    EMBEDDING_PROVIDER,
 )
 from ..core.logging_config import get_logger
 import asyncio
@@ -22,14 +23,22 @@ class GoogleGeminiEmbeddingFunction(EmbeddingFunction):
         genai.configure(api_key=self.api_key)
 
     def __call__(self, input: Documents) -> Embeddings:
-        # chroma's __call__ is sync and we are running inside an async ingestion pipeline.
         result = genai.embed_content(
             model=self.model_name, content=input, task_type="retrieval_document"
         )
         return result["embedding"]
 
 
-# Global cache for project-specific clients to avoid concurrent initialization issues
+class HuggingFaceEmbeddingFunction(EmbeddingFunction):
+    def __init__(self, model_name: str = HF_EMBEDDING_MODEL):
+        from sentence_transformers import SentenceTransformer
+
+        self.model = SentenceTransformer(model_name)
+
+    def __call__(self, input: Documents) -> Embeddings:
+        return self.model.encode(input).tolist()
+
+
 _client_cache = {}
 _cache_lock = threading.Lock()
 
@@ -44,11 +53,18 @@ class ChromaClient:
                 self.collection = _client_cache[path_str].collection
                 return
 
-            logger.info(f"Initializing new Chroma PersistentClient at {path_str}")
+            logger.info(f"Initializing Chroma at {path_str} using {EMBEDDING_PROVIDER}")
             self.client = chromadb.PersistentClient(path=path_str)
-            self.embedding_function = GoogleGeminiEmbeddingFunction(
-                api_key=GEMINI_API_KEY, model_name=GEMINI_EMBEDDING_MODEL
-            )
+
+            if EMBEDDING_PROVIDER == "huggingface":
+                self.embedding_function = HuggingFaceEmbeddingFunction(
+                    HF_EMBEDDING_MODEL
+                )
+            else:
+                self.embedding_function = GoogleGeminiEmbeddingFunction(
+                    GEMINI_API_KEY, GEMINI_EMBEDDING_MODEL
+                )
+
             self.collection = self.client.get_or_create_collection(
                 name="code_snippets", embedding_function=self.embedding_function
             )
@@ -60,27 +76,21 @@ class ChromaClient:
         self.collection.add(documents=documents, metadatas=metadatas, ids=ids)
 
     def query(self, query_texts: list[str], n_results: int = 5):
-        # 1. Vector Search (Cosine Similarity via Gemini)
         vector_results = self.collection.query(
-            query_texts=query_texts,
-            n_results=n_results * 2,  # Get more candidates for reranking
+            query_texts=query_texts, n_results=n_results * 2
         )
-
-        # 2. Simple BM25-like reranking (Keyword Boosting)
-        # In a real production setup, we'd use a dedicated cross-encoder or BM25 index.
-        # Here we simulate by boosting results containing exact query tokens.
         boosted_results = []
         keywords = set(query_texts[0].lower().split())
 
         for i in range(len(vector_results["ids"][0])):
             doc = vector_results["documents"][0][i]
             meta = vector_results["metadatas"][0][i]
-            dist = vector_results["distances"][0][i]
-
-            score = 1.0 - dist  # Higher is better
+            dist = (
+                vector_results["distances"][0][i] if vector_results["distances"] else 0
+            )
+            score = 1.0 - dist
             match_count = sum(1 for kw in keywords if kw in doc.lower())
-            score += match_count * 0.1  # Boost for keyword matches
-
+            score += match_count * 0.1
             boosted_results.append(
                 {
                     "id": vector_results["ids"][0][i],
@@ -90,6 +100,5 @@ class ChromaClient:
                 }
             )
 
-        # Sort by boosted score
         boosted_results.sort(key=lambda x: x["score"], reverse=True)
         return boosted_results[:n_results]

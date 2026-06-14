@@ -18,30 +18,78 @@ HIGH_RISK_PATTERNS = [
     r"session",
     r"password",
     r"security",
+    r"route",
+    r"api",
+    r"endpoint",
+    r"controller",
+    r"view",
+    r"handler",
 ]
 
 
 class Orchestrator:
     @staticmethod
-    def plan(state: AgentState):
+    async def plan(state: AgentState):
         """Orchestrator node: decides the execution plan."""
-        logger.info(f"Orchestrator planning for project: {state['project_tag']}")
+        tag = state["project_tag"]
+        logger.info(f"Orchestrator planning for project: {tag}")
 
         files = state.get("files_to_review", [])
         if not files:
             logger.warning("No files to review.")
             return {"next_action": "end"}
 
-        # 1. Prioritization
+        # 1. Fetch Codebase Summary from Project Node (Stored during ingestion)
+        codebase_summary = state.get("codebase_summary")
+        if not codebase_summary:
+            try:
+                from ..db.ladybug_db import LadybugClient
+                from ..core.config import get_project_dir
+
+                project_dir = get_project_dir(tag)
+                client = LadybugClient(db_path=project_dir / "graph_db")
+
+                # Check for stored summary first
+                res = client.execute(
+                    "MATCH (p:Project {id: $id}) RETURN p.summary, p.name", {"id": tag}
+                )
+                if res.has_next():
+                    df = res.get_as_df()
+                    codebase_summary = df.iloc[0]["p.summary"]
+                    project_name = df.iloc[0]["p.name"]
+
+                # Fallback: compute and store if missing
+                if not codebase_summary:
+                    logger.info(
+                        "GRAPH: Summary missing in Project node. Regenerating fallback..."
+                    )
+                    from .ingestion import IngestionPipeline
+
+                    pipeline = IngestionPipeline(tag=tag)
+                    await pipeline._generate_and_store_project_summary(
+                        project_name or tag
+                    )
+
+                    # Re-fetch
+                    res = client.execute(
+                        "MATCH (p:Project {id: $id}) RETURN p.summary", {"id": tag}
+                    )
+                    if res.has_next():
+                        codebase_summary = res.get_as_df().iloc[0]["p.summary"]
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch/generate codebase summary: {e}")
+                codebase_summary = "Architectural overview unavailable."
+
+        # 2. Prioritization
         prioritized_files = Orchestrator._prioritize_files(files)
 
-        # 2. Batching & Agent Selection
-        # We'll use LangGraph's Send API to fan out.
-        # This node returns a list of Send objects.
-        # But in standard LangGraph nodes, we return state updates.
-        # Parallel fan-out is typically done via a conditional edge after this node.
-
-        return {"files_to_review": prioritized_files, "next_action": "fan_out"}
+        # 3. Batching & Agent Selection
+        return {
+            "files_to_review": prioritized_files,
+            "next_action": "fan_out",
+            "codebase_summary": codebase_summary,
+        }
 
     @staticmethod
     def _prioritize_files(files: List[Dict]) -> List[Dict]:
@@ -106,22 +154,21 @@ def get_fan_out_commands(state: AgentState):
         "test_writer": "test_writer_agent",
     }
 
-    # If mode is single, only run the target agent
-    if state["review_mode"] == "single" and state["target_agent"]:
-        target = state["target_agent"]
-        for i in range(0, len(files), batch_size):
-            batch = files[i : i + batch_size]
-            commands.append(
-                Send(
-                    agent_nodes[target],
-                    {
-                        "files": batch,
-                        "project_tag": state["project_tag"],
-                        "project_root": state.get("project_root", ""),
-                        "project_config": state.get("project_config", {}),
-                    },
-                )
-            )
+    common_payload = {
+        "project_tag": state["project_tag"],
+        "project_root": state.get("project_root", ""),
+        "project_config": state.get("project_config", {}),
+        "user_prompt": state.get("user_prompt"),
+        "codebase_summary": state.get("codebase_summary"),
+    }
+
+    # If mode is subset, only run the target agents
+    if state["review_mode"] == "subset" and state.get("target_agents"):
+        for target in state["target_agents"]:
+            for i in range(0, len(files), batch_size):
+                batch = files[i : i + batch_size]
+                payload = {**common_payload, "files": batch}
+                commands.append(Send(agent_nodes[target], payload))
         return commands
 
     # For full/diff, fan out per agent per batch
@@ -135,16 +182,7 @@ def get_fan_out_commands(state: AgentState):
 
         for i in range(0, len(assigned_files), batch_size):
             batch = assigned_files[i : i + batch_size]
-            commands.append(
-                Send(
-                    node_name,
-                    {
-                        "files": batch,
-                        "project_tag": state["project_tag"],
-                        "project_root": state.get("project_root", ""),
-                        "project_config": state.get("project_config", {}),
-                    },
-                )
-            )
+            payload = {**common_payload, "files": batch}
+            commands.append(Send(node_name, payload))
 
     return commands
