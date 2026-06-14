@@ -328,16 +328,108 @@ def hook_install(tag: str):
 def hook_run(tag: str):
     """Run security and smell agents on staged files."""
     import subprocess
+    import asyncio
+    import os
 
     db = get_registry_session()
     project = db.query(Project).filter(Project.tag == tag).first()
     db.close()
-    staged = subprocess.check_output(
-        ["git", "-C", project.root_path, "diff", "--cached", "--name-only"], text=True
-    ).splitlines()
-    # Simplified fast review logic here (omitted for brevity, matches earlier implementation)
-    typer.echo("Running pre-commit checks...")
-    # (Rest of implementation logic from previous turns would go here)
+
+    if not project:
+        typer.echo(f"Error: Project {tag} not found.")
+        raise typer.Exit(1)
+
+    try:
+        staged = subprocess.check_output(
+            ["git", "-C", project.root_path, "diff", "--cached", "--name-only"],
+            text=True,
+        ).splitlines()
+    except subprocess.CalledProcessError:
+        staged = []
+
+    files_to_review = []
+    for file in staged:
+        if file.endswith((".py", ".js", ".ts", ".tsx", ".go", ".rs", ".c", ".cpp")):
+            file_path = os.path.join(project.root_path, file)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                files_to_review.append(
+                    {
+                        "path": file_path,
+                        "content": content,
+                        "language": file.split(".")[-1].lower()
+                        if "." in file
+                        else "unknown",
+                    }
+                )
+
+    if not files_to_review:
+        typer.echo("No relevant staged files to check.")
+        raise typer.Exit(0)
+
+    typer.echo(f"Running fast pre-commit checks on {len(files_to_review)} files...")
+
+    # Build minimalist state forcing 1-shot execution for speed
+    state = {
+        "project_tag": tag,
+        "project_root": project.root_path,
+        "files": files_to_review,
+        "project_config": {"max_iterations": 1, "max_recursion_depth": 0},
+    }
+
+    from .agents.security import SecurityAgent
+    from .agents.smell_detector import SmellDetectorAgent
+    from .core.config import get_project_dir
+
+    async def run_fast_checks():
+        project_dir = get_project_dir(tag)
+        sec_agent = SecurityAgent(
+            tag=tag, project_dir=str(project_dir), project_root=project.root_path
+        )
+        smell_agent = SmellDetectorAgent(
+            tag=tag, project_dir=str(project_dir), project_root=project.root_path
+        )
+
+        sec_task = sec_agent.run(state)
+        smell_task = smell_agent.run(state)
+
+        return await asyncio.gather(sec_task, smell_task)
+
+    results = asyncio.run(run_fast_checks())
+    sec_results = results[0].get("security_findings", [])
+    smell_results = results[1].get("smell_findings", [])
+
+    critical_found = False
+
+    if sec_results or smell_results:
+        typer.echo("\n--- PRE-COMMIT FINDINGS ---")
+
+        for f in sec_results:
+            severity = f.get("severity", "").lower()
+            if severity == "critical":
+                critical_found = True
+            typer.echo(
+                f"[SECURITY] {severity.upper()}: {f.get('title')} ({f.get('file_path')}:{f.get('line')})"
+            )
+            typer.echo(f"           {f.get('description')}")
+
+        for f in smell_results:
+            severity = f.get("severity", "").lower()
+            if severity == "critical":
+                critical_found = True
+            typer.echo(
+                f"[SMELL]    {severity.upper()}: {f.get('title')} ({f.get('file_path')}:{f.get('line')})"
+            )
+            typer.echo(f"           {f.get('description')}")
+
+        if critical_found:
+            typer.echo("\n❌ CRITICAL issues found. Commit blocked.")
+            raise typer.Exit(1)
+        else:
+            typer.echo("\n⚠️ Issues found, but no CRITICALs. Proceeding with commit.")
+    else:
+        typer.echo("\n✅ Pre-commit checks passed cleanly.")
 
 
 if __name__ == "__main__":
