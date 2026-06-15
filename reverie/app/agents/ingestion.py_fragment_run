@@ -1,0 +1,90 @@
+    def _extract_symbols_to_kg(self, file_path: str, tree, content: bytes, ext: str):
+        """Uses Tree-sitter to map symbols and function calls across languages."""
+        lang_key = ext if ext in LANGUAGES else "js"
+        lang = LANGUAGES.get(lang_key)
+        
+        self.ladybug_client.execute(
+            "MATCH (d:Directory {path: $dir}) MERGE (m:Module {path: $path}) MERGE (d)-[:DIR_TO_MODULE]->(m)",
+            {"dir": os.path.dirname(file_path), "path": file_path}
+        )
+
+        queries = {
+            "py": """
+                (import_from_statement module_name: (dotted_name) @import)
+                (import_statement name: (dotted_name) @import)
+                (class_definition name: (identifier) @class superclasses: (argument_list (identifier) @base)?)
+                (function_definition name: (identifier) @func)
+                (call function: (identifier) @call)
+                (call function: (attribute attribute: (identifier) @call))
+            """,
+            "js": """
+                (import_statement source: (string) @import)
+                (class_declaration name: (identifier) @class heritage: (extends_clause value: (identifier) @base)?)
+                (function_declaration name: (identifier) @func)
+                (method_definition name: (property_identifier) @func)
+                (call_expression function: (identifier) @call)
+            """
+        }
+        
+        query_str = queries.get(lang_key)
+        if not query_str: return
+
+        query = Query(lang, query_str)
+        cursor = QueryCursor(query)
+        matches = cursor.matches(tree.root_node)
+        
+        current_func_name = None
+        for _, captures in matches:
+            for tag, nodes in captures.items():
+                for node in nodes:
+                    try:
+                        name = content[node.start_byte:node.end_byte].decode("utf-8", errors="ignore").strip("\"'")
+                        if tag == "import":
+                            # Link current module to the imported module (Module-to-Module dependency)
+                            self.ladybug_client.execute(
+                                "MATCH (m1:Module {path: $file}) MERGE (m2:Module {path: $import_name}) MERGE (m1)-[:DEPENDS_ON]->(m2)",
+                                {"file": file_path, "import_name": name}
+                            )
+                        elif tag == "class":
+                            node_id = f"{file_path}:{name}"
+                            self.ladybug_client.execute(
+                                "MATCH (m:Module {path: $file}) MERGE (c:Class {id: $id}) SET c.name = $name, c.file = $file MERGE (m)-[:MOD_TO_CLASS]->(c)",
+                                {"id": node_id, "name": name, "file": file_path}
+                            )
+                        elif tag == "base":
+                            # Class inheritance
+                            class_node_id = f"{file_path}:{current_class_name}" if 'current_class_name' in locals() else None
+                            if class_node_id:
+                                self.ladybug_client.execute(
+                                    "MATCH (c1:Class {id: $id}) MERGE (c2:Class {id: $base_id}) SET c2.name = $base_name MERGE (c1)-[:INHERITS_FROM]->(c2)",
+                                    {"id": class_node_id, "base_id": f"external:{name}", "base_name": name}
+                                )
+                        elif tag == "func":
+                            current_func_name = name
+                            node_id = f"{file_path}:{name}"
+                            self.ladybug_client.execute(
+                                "MATCH (m:Module {path: $file}) MERGE (f:Function {id: $id}) SET f.name = $name, f.file = $file MERGE (m)-[:MOD_TO_FUNC]->(f)",
+                                {"id": node_id, "name": name, "file": file_path}
+                            )
+                        elif tag == "call" and current_func_name:
+                            caller_id = f"{file_path}:{current_func_name}"
+                            # 1. Standard Call relationship
+                            self.ladybug_client.execute(
+                                "MATCH (caller:Function {id: $caller_id}) "
+                                "MERGE (callee:Function {id: $callee_name}) SET callee.name = $callee_name "
+                                "MERGE (caller)-[:CALLS]->(callee)",
+                                {"caller_id": caller_id, "callee_name": name}
+                            )
+                            
+                            # 2. Sink identification (Special Case for get_data_flow)
+                            SINK_KEYWORDS = ["execute", "run", "eval", "pickle", "render", "redirect", "system", "popen"]
+                            if any(k in name.lower() for k in SINK_KEYWORDS):
+                                sink_id = f"sink:{name}:{file_path}:{node.start_point[0]}"
+                                self.ladybug_client.execute(
+                                    "MATCH (f:Function {id: $func_id}) "
+                                    "MERGE (s:Finding {finding_id: $sink_id}) SET s.title = $name, s.category = 'SINK' "
+                                    "MERGE (f)-[:USES]->(s)",
+                                    {"func_id": caller_id, "sink_id": sink_id, "name": f"Potential Sink: {name}"}
+                                )
+                    except:
+                        continue

@@ -1,0 +1,46 @@
+    async def run(self, batch_state: Dict) -> Dict:
+        all_smells = []
+        config = batch_state.get("project_config", {})
+        max_depth = config.get("max_recursion_depth", 3)
+
+        for file_info in batch_state.get("files", []):
+            logger.info(f"Smell investigation started for: {file_info['path']}")
+            
+            arch_summary = ""
+            if batch_state.get("codebase_summary"):
+                arch_summary = f"\nCODEBASE ARCHITECTURAL OVERVIEW:\n{batch_state['codebase_summary']}\n"
+
+            user_instr = f"\nCUSTOM USER INSTRUCTIONS:\n{batch_state['user_prompt']}\n" if batch_state.get("user_prompt") else ""
+            
+            workflow = StateGraph(AgentState)
+            workflow.add_node("agent", self._call_model); workflow.add_node("tools", ToolNode(self.tools))
+            workflow.set_entry_point("agent")
+            workflow.add_conditional_edges("agent", self._should_continue, {"continue": "tools", "end": END})
+            workflow.add_edge("tools", "agent")
+            compiled_agent = workflow.compile()
+
+            system_msg = SystemMessage(content=f"""
+You are a Senior Architect. Identify structural problems (God Classes, Feature Envy, Circular Deps).
+{arch_summary}
+{user_instr}
+CRITICAL INSTRUCTIONS FOR RE-ACT LOOP:
+You MUST use tools. DO NOT just output text plans. ACT.
+1. Use `get_callers` to determine architectural bottlenecks.
+2. Use `check_circular_dependencies` to find unhealthy cycles.
+3. If confirmed, call `emit_code_smell`.
+4. DO NOT just explain what you will do. EXECUTE THE TOOL.
+
+PROJECT_ROOT: {self.project_root}
+MAX RECURSION DEPTH: {max_depth}
+""")
+            initial_input = {"messages": [system_msg, HumanMessage(content=f"Analyze for code smells:\nPATH: {file_info['path']}\nCONTENT:\n{file_info['content']}")]}
+            try:
+                result = await compiled_agent.ainvoke(initial_input, {"recursion_limit": config.get("max_iterations", 25)})
+                for msg in result["messages"]:
+                    if isinstance(msg, ToolMessage) and msg.name == "emit_code_smell":
+                        try:
+                            smell_data = json.loads(msg.content); smell_data["file_path"] = file_info["path"]
+                            all_smells.append(smell_data)
+                        except: pass
+            except Exception as e: logger.error(f"Smell loop failed for {file_info['path']}: {e}"); continue
+        return {"smell_findings": all_smells}

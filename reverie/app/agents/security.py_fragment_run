@@ -1,0 +1,65 @@
+    async def _call_model(self, state: AgentState):
+        messages = list(state["messages"])
+        
+        # 1. Depth Tracking
+        get_file_calls = [m for m in messages if isinstance(m, ToolMessage) and m.name == "get_file"]
+        current_depth = len(get_file_calls)
+        max_depth = state.get("project_config", {}).get("max_recursion_depth", 3)
+        
+        # 2. Robust Loop Guard
+        last_ai_messages = [m for m in messages if isinstance(m, AIMessage) and m.tool_calls]
+        force_conclude = False
+        if len(last_ai_messages) >= 2:
+            last = last_ai_messages[-1].tool_calls[0]
+            prev = last_ai_messages[-2].tool_calls[0]
+            
+            # Compare args regardless of dictionary key order
+            last_args = json.dumps(last["args"], sort_keys=True)
+            prev_args = json.dumps(prev["args"], sort_keys=True)
+            
+            if last["name"] == prev["name"] and last_args == prev_args:
+                logger.warning(f"LOOP DETECTED: Agent repeating {last['name']} with same args.")
+                
+                # If we've looped 3 times, force conclusion
+                if len(last_ai_messages) >= 3:
+                    prev2 = last_ai_messages[-3].tool_calls[0]
+                    prev2_args = json.dumps(prev2["args"], sort_keys=True)
+                    if last["name"] == prev2["name"] and last_args == prev2_args:
+                        logger.error("SEVERE LOOP DETECTED. Forcing agent to conclude.")
+                        force_conclude = True
+                
+                if not force_conclude:
+                    messages.append(SystemMessage(content="ANTI-LOOP WARNING: You just repeated the exact same tool call with the exact same arguments. This is strictly forbidden. You must either try a different file, a different tool, or use emit_finding. Do not repeat the same action again."))
+
+        # 3. Track emitted vulnerabilities
+        emitted_vulns = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name == "emit_finding":
+                try:
+                    finding = json.loads(msg.content)
+                    emitted_vulns.append(f"- {finding.get('title')} ({finding.get('severity')})")
+                except: pass
+        
+        vuln_text = "\n".join(emitted_vulns) if emitted_vulns else "None"
+        if messages and isinstance(messages[0], SystemMessage):
+            parts = messages[0].content.split("CURRENTLY EMITTED VULNERABILITIES:")
+            messages[0] = SystemMessage(content=f"{parts[0]}CURRENTLY EMITTED VULNERABILITIES:\n{vuln_text}\n")
+
+        # 4. Enforce Conclude
+        llm = self.llm
+        if current_depth >= max_depth or force_conclude:
+            logger.info("MAX DEPTH OR LOOP REACHED: Forcing conclusion.")
+            # Unbind tools to force text generation or emit_finding only
+            base_llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL_TYPE, google_api_key=GEMINI_API_KEY, temperature=0)
+            llm = base_llm.bind_tools([self.tools[-1]]) # only emit_finding
+
+        logger.info(f"Security Agent Reasoning (Depth: {current_depth}/{max_depth}, Tool Calls: {len(last_ai_messages)})")
+        async with llm_limiter: response = await llm.ainvoke(messages)
+        
+        # If forced to conclude and model still tries to hallucinate a tool, override it
+        if force_conclude and response.tool_calls and response.tool_calls[0]["name"] != "emit_finding":
+             response.tool_calls = []
+             response.content = "Investigation halted due to repetitive loops. Please review emitted findings."
+             
+        logger.info(f"--- SECURITY AI RESPONSE ---\n{response.content}\nTool Calls: {response.tool_calls}")
+        return {"messages": [response]}
