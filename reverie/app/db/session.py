@@ -4,11 +4,33 @@ from .models import Base
 from ..core.config import get_project_dir, GLOBAL_DB_PATH
 
 
-def get_registry_session():
+def get_engine_registry():
     GLOBAL_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(
+    return create_engine(
         f"sqlite:///{GLOBAL_DB_PATH}", connect_args={"check_same_thread": False}
     )
+
+
+def init_db():
+    """Initialize the global registry database."""
+    engine = get_engine_registry()
+    Base.metadata.create_all(bind=engine)
+
+
+def get_db():
+    """FastAPI dependency for registry database session."""
+    engine = get_engine_registry()
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_registry_session():
+    """Direct session getter for CLI/Scripts."""
+    engine = get_engine_registry()
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return SessionLocal()

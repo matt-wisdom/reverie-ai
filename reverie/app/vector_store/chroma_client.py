@@ -1,13 +1,10 @@
 import chromadb
 import os
-import google.generativeai as genai
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+from langchain_litellm import LiteLLMEmbeddings
 from ..core.config import (
-    get_gemini_api_key, 
-    get_gemini_model, 
-    GEMINI_EMBEDDING_MODEL, 
-    HF_EMBEDDING_MODEL, 
-    get_embedding_provider
+    get_embedding_model,
+    get_embedding_api_key
 )
 from ..core.logging_config import get_logger
 import asyncio
@@ -15,19 +12,12 @@ import threading
 
 logger = get_logger(__name__)
 
-class GeminiEmbeddingFunction(EmbeddingFunction):
-    def __init__(self, api_key: str, model_name: str):
-        self.api_key = api_key
-        self.model_name = model_name
-        genai.configure(api_key=self.api_key)
+class LiteLLMEmbeddingFunction(EmbeddingFunction):
+    def __init__(self, model: str, api_key: str = None):
+        self.ef = LiteLLMEmbeddings(model=model, api_key=api_key)
 
     def __call__(self, input: Documents) -> Embeddings:
-        result = genai.embed_content(
-            model=self.model_name,
-            content=input,
-            task_type="retrieval_document"
-        )
-        return result["embedding"]
+        return self.ef.embed_documents(input)
 
 class ChromaClient:
     _instances = {}
@@ -45,24 +35,17 @@ class ChromaClient:
         if self._initialized:
             return
             
-        provider = get_embedding_provider()
-        logger.info(f"Initializing Chroma at {path} using {provider}")
+        model_name = get_embedding_model()
+        logger.info(f"Initializing Chroma at {path} using LiteLLM model: {model_name}")
         
         self.client = chromadb.PersistentClient(path=path)
         
-        if provider == "gemini":
-            api_key = get_gemini_api_key()
-            if not api_key:
-                logger.error("GEMINI_API_KEY not set for embeddings. Check your .env files.")
-            self.embedding_fn = GeminiEmbeddingFunction(
-                api_key=api_key or "missing",
-                model_name=GEMINI_EMBEDDING_MODEL
-            )
-        else:
-            from chromadb.utils import embedding_functions
-            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=HF_EMBEDDING_MODEL
-            )
+        # LiteLLM handles both cloud (OpenAI/Gemini) and local/hf providers.
+        api_key = get_embedding_api_key()
+        self.embedding_fn = LiteLLMEmbeddingFunction(
+            model=model_name,
+            api_key=api_key
+        )
             
         self.collection = self.client.get_or_create_collection(
             name="reverie_context",

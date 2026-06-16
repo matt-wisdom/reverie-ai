@@ -19,3 +19,4 @@ explorer-session.json
 .reverie/
 *.sarif
 .env
+node_modules/

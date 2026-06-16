@@ -487,5 +487,18 @@ def hook_run(tag: str):
         typer.echo("\n✅ Pre-commit checks passed cleanly.")
 
 
+@app.command()
+def server(
+    host: str = typer.Option("127.0.0.1", help="Host to bind"),
+    port: int = typer.Option(8000, help="Port to bind"),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload"),
+):
+    """Start the Reverie AI GUI server (FastAPI + Vue)."""
+    import uvicorn
+
+    typer.echo(f"Starting server at http://{host}:{port}")
+    uvicorn.run("app.main:app", host=host, port=port, reload=reload)
+
+
 if __name__ == "__main__":
     app()

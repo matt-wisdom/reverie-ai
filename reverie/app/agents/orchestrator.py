@@ -2,7 +2,7 @@ import os
 import re
 from typing import List, Dict
 from langgraph.types import Send
-from ..graph.state import AgentState, FileToReview
+from ..graph.state import AgentState
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -45,7 +45,6 @@ class Orchestrator:
             try:
                 from ..db.ladybug_db import LadybugClient
                 from ..core.config import get_project_dir
-
                 project_dir = get_project_dir(tag)
                 client = LadybugClient(db_path=project_dir / "graph_db")
 
@@ -57,7 +56,6 @@ class Orchestrator:
                     df = res.get_as_df()
                     codebase_summary = df.iloc[0]["p.summary"]
                     project_name = df.iloc[0]["p.name"]
-
                 # Fallback: compute and store if missing
                 if not codebase_summary:
                     logger.info(

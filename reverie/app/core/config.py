@@ -28,16 +28,10 @@ def _ensure_env():
             loaded_from = "Standard OS Environment"
         
         # LOUD DEBUGGING
-        provider = os.getenv("LLM_PROVIDER", "gemini (default)")
-        print(f"--- REVERIE STARTUP (v0.1.2) ---")
+        model = os.getenv("LLM_MODEL", "gemini/gemini-1.5-flash (default)")
+        print(f"--- REVERIE STARTUP (v0.1.5) ---")
         print(f"DEBUG: Config loaded from: {loaded_from}")
-        print(f"DEBUG: LLM_PROVIDER set to: {provider}")
-        if provider == "openai":
-            key = os.getenv("OPENAI_API_KEY")
-            print(f"DEBUG: OPENAI_API_KEY found: {'Yes' if key else 'MISSING'}")
-        else:
-            key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-            print(f"DEBUG: GEMINI_API_KEY found: {'Yes' if key else 'MISSING'}")
+        print(f"DEBUG: LLM_MODEL set to: {model}")
         print(f"---------------------------------")
         
         _ENV_LOADED = True
@@ -56,26 +50,17 @@ def get_project_dir(tag: str) -> Path:
     project_dir.mkdir(parents=True, exist_ok=True)
     return project_dir
 
-# LLM Settings
-def get_llm_provider(): return _get_env("LLM_PROVIDER", "gemini")
+# LiteLLM Chat Settings
+def get_llm_model(): return _get_env("LLM_MODEL", "gemini/gemini-1.5-flash")
+def get_llm_api_key(): return _get_env("LLM_API_KEY")
+def get_llm_base_url(): return _get_env("LLM_BASE_URL")
 
-# Gemini Settings
-def get_gemini_api_key(): 
-    return _get_env("GOOGLE_API_KEY") or _get_env("GEMINI_API_KEY")
-def get_gemini_model(): return _get_env("GEMINI_MODEL_TYPE", "gemini-1.5-flash")
-
-# OpenAI Settings
-def get_openai_api_key(): return _get_env("OPENAI_API_KEY")
-def get_openai_model(): return _get_env("OPENAI_MODEL_NAME", "gpt-4o")
-def get_openai_base_url(): return _get_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-# Embedding Settings
-def get_embedding_provider(): return _get_env("EMBEDDING_PROVIDER", "gemini")
-GEMINI_EMBEDDING_MODEL = _get_env("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
-HF_EMBEDDING_MODEL = _get_env("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+# LiteLLM Embedding Settings
+def get_embedding_model(): return _get_env("EMBEDDING_MODEL", "gemini/gemini-embedding-001")
+def get_embedding_api_key(): return _get_env("EMBEDDING_API_KEY")
 
 # Rate Limit
-def get_llm_rpm(): return int(_get_env("LLM_RPM", _get_env("GEMINI_RPM", "15")))
+def get_llm_rpm(): return int(_get_env("LLM_RPM", "15"))
 llm_limiter = AsyncLimiter(15, 60)
 
 # ReAct Agent Settings
