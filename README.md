@@ -126,8 +126,9 @@ Access the dashboard at `http://localhost:8000`.
 - [ ] **Real Test Generation**: Implement `TestGenAgent` using Knowledge Graph context.
 - [ ] **Active Scanning**: Automated exploit generation and verification (offensive agent that confirms findings).
 - [ ] **File Tree Explorer**: Browse repository findings inline in the browser.
-- [ ] **LLM Evals**: Automated accuracy benchmarking for agent reasoning.
+- [ ] **LLM Application Testing**: Implement automated evals to benchmark agent accuracy and measure hallucination rates.
 
+See Full Roadmap([Todo.md](https://github.com/matt-wisdom/reverie-ai/blob/main/todo.md)):
 ---
 
 ## 📜 License
