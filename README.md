@@ -49,7 +49,7 @@ LLM_MODEL=openai/gpt-4o
 LLM_API_KEY=your_openai_key
 
 # Example for Gemini (default)
-# LLM_MODEL=gemini/gemini-3.1-pro
+# LLM_MODEL=gemini/gemini-1.5-flash
 # LLM_API_KEY=your_gemini_key
 
 EMBEDDING_MODEL=openai/text-embedding-3-small
@@ -61,32 +61,55 @@ EOF
 
 ---
 
-## 💻 CLI Usage
+## 💻 CLI Reference
 
-### Initialize a Project
-```bash
-reverie init /path/to/your/repo --tag my-project
-```
+Reverie provides a powerful CLI for automation and integration.
 
-### Ingest the Codebase
-Build the Knowledge Graph and Vector index:
-```bash
-reverie load my-project
-```
+### Core Commands
 
-### Run a Review
-```bash
-# Run a full review
-reverie review my-project
+#### `reverie init <PATH>`
+Initialize a new project registry entry.
+*   **Arguments**: `PATH` (Path to the local repository).
+*   **Options**:
+    *   `--tag <TAG>`: Unique identifier for the project (e.g., `my-api`).
+    *   `--min-severity <level>`: Threshold for findings (low, medium, high). Default: `medium`.
 
-# Run a subset of modes with custom instructions
-reverie review my-project --mode security,bug_detect --prompt "Focus on JWT validation logic."
-```
+#### `reverie load <TAG>`
+Ingest the codebase into the Knowledge Graph and Vector Database.
+*   **Arguments**: `TAG` (Project unique identifier).
+*   **Options**:
+    *   `--force`, `-f`: Ignore hashes and re-ingest all files.
+    *   `--prompt`, `-p`: Custom instructions to influence the AI-generated architectural summary.
 
-### Manage Git Hooks
-```bash
-reverie hook install my-project
-```
+#### `reverie summary <TAG>`
+Retrieve the AI-generated high-level architectural overview of the codebase.
+
+#### `reverie review <TAG>`
+Execute the multi-agent reasoning loop.
+*   **Options**:
+    *   `--mode <MODES>`: Comma-separated list of agents to run (`bug_detect`, `security`, `smell`). Default: `full`.
+    *   `--prompt`, `-p`: Custom instructions injected into agent personas for this specific run.
+    *   `--output-dir`, `-o`: Custom path to export Markdown and SARIF reports.
+
+#### `reverie server`
+Launch the GUI and REST API.
+*   **Options**: `--host`, `--port`, `--reload`. Default: `http://127.0.0.1:8000`.
+
+---
+
+### Specialized Tools
+
+#### `reverie hook`
+Manage git pre-commit hooks for automated safety.
+*   **`install <TAG>`**: Adds a script to `.git/hooks/pre-commit` that runs security and smell checks on staged files.
+*   **`uninstall <TAG>`**: Safely removes the Reverie hook.
+*   **`run <TAG>`**: Manually triggers the fast-pass check on staged files.
+
+#### `reverie history`
+Manage and view previous review reports.
+*   **`list <TAG>`**: Show all historical run IDs and timestamps.
+*   **`get-report <TAG> <ID>`**: Output the Markdown content of a specific report to the terminal.
+*   **`get-sarif <TAG> <ID>`**: Output the SARIF JSON content of a specific report.
 
 ---
 
@@ -107,7 +130,6 @@ rm -rf ../reverie/app/static && cp -r dist ../reverie/app/static
 ```bash
 reverie server
 ```
-Access the dashboard at `http://localhost:8000`.
 
 ---
 
@@ -126,9 +148,8 @@ Access the dashboard at `http://localhost:8000`.
 - [ ] **Real Test Generation**: Implement `TestGenAgent` using Knowledge Graph context.
 - [ ] **Active Scanning**: Automated exploit generation and verification (offensive agent that confirms findings).
 - [ ] **File Tree Explorer**: Browse repository findings inline in the browser.
-- [ ] **LLM Application Testing**: Implement automated evals to benchmark agent accuracy and measure hallucination rates.
+- [ ] **LLM Evals**: Automated accuracy benchmarking for agent reasoning.
 
-See Full Roadmap([Todo.md](https://github.com/matt-wisdom/reverie-ai/blob/main/todo.md)):
 ---
 
 ## 📜 License
