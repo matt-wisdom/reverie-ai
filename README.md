@@ -117,16 +117,8 @@ Manage and view previous review reports.
 
 Reverie includes a built-in web dashboard for visual reporting and management.
 
-### 1. Build the Frontend
-```bash
-cd frontend
-npm install
-npm run build
-# Move to backend static folder
-rm -rf ../reverie/app/static && cp -r dist ../reverie/app/static
-```
 
-### 2. Start the Server
+### 1. Start the Server
 ```bash
 reverie server
 ```
