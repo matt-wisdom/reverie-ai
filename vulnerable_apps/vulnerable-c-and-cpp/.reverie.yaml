@@ -1,0 +1,25 @@
+configs:
+  auto_gen_tests: true
+  custom_rules: []
+  max_iterations: 25
+  max_recursion_depth: 3
+  min_coverage: 80
+  min_severity: medium
+  skip_dirs:
+  - .git
+  - node_modules
+  - __pycache__
+  - venv
+  - .venv
+  - dist
+  - build
+  - .reverie.yaml
+  - .pytest_cache
+  - chroma_data
+  - chroma_db
+  - dataset
+  - .idea
+  - .vscode
+name: vulnerable-c-and-cpp
+path: /mnt/C6EE65A1EE658B0F/WORKEST/vulnerable-c-and-cpp
+project_id: c
