@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 from .core.logging_config import setup_logging, get_logger
-from .core.config import get_project_dir, REVERIE_ROOT, get_llm_provider
+from .core.config import get_project_dir, REVERIE_ROOT
 from .db.session import init_db, get_db, get_registry_session
 from .db.models import Project
 from .db.ladybug_db import LadybugClient
